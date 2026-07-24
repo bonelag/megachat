@@ -2,6 +2,12 @@ name: Build Android APK
 
 on:
   workflow_dispatch:
+    inputs:
+      version_code:
+        description: Android versionCode (must increase for upgrades)
+        required: true
+        default: "436"
+        type: string
 
 permissions:
   contents: read
@@ -12,7 +18,7 @@ concurrency:
 
 jobs:
   build-apk:
-    name: Build debug APK
+    name: Build signed release APK
     runs-on: ubuntu-latest
     timeout-minutes: 45
 
@@ -54,11 +60,15 @@ jobs:
         run: |
           cat > capacitor.config.json <<'EOF'
           {
-            "appId": "com.bonelag.megachat",
-            "appName": "MegaChat",
+            "appId": "xyz.chatboxapp.chatbox",
+            "appName": "Chatbox",
             "webDir": "release/app/dist/renderer",
             "server": {
-              "androidScheme": "https"
+              "androidScheme": "https",
+              "allowNavigation": ["*"]
+            },
+            "android": {
+              "allowMixedContent": true
             },
             "plugins": {
               "SplashScreen": {
@@ -69,17 +79,36 @@ jobs:
           EOF
           pnpm exec cap add android
           pnpm exec cap sync android
+          pnpm exec capacitor-assets generate --android
 
-      - name: Build debug APK
+      - name: Configure signed release
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_VERSION_CODE: ${{ inputs.version_code }}
+        run: |
+          test -n "$ANDROID_KEYSTORE_BASE64"
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/chatbox-release.p12"
+          VERSION_NAME="$(node -p "require('./package.json').version")"
+          python .github/scripts/configure_android_release.py \
+            --android-dir android \
+            --version-name "$VERSION_NAME" \
+            --version-code "$ANDROID_VERSION_CODE"
+
+      - name: Build signed release APK
         working-directory: android
+        env:
+          ANDROID_KEYSTORE_PATH: ${{ runner.temp }}/chatbox-release.p12
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           chmod +x gradlew
-          ./gradlew --no-daemon assembleDebug
+          ./gradlew --no-daemon assembleRelease
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: megachat-android-debug-${{ github.run_number }}
-          path: android/app/build/outputs/apk/debug/app-debug.apk
+          name: chatbox-android-release-${{ github.run_number }}
+          path: android/app/build/outputs/apk/release/app-release.apk
           if-no-files-found: error
           retention-days: 14
