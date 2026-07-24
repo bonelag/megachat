@@ -64,6 +64,7 @@ android {
 </manifest>
 """
             )
+            (app_dir / "proguard-rules.pro").write_text("# Project rules\n")
 
             subprocess.run(
                 [
@@ -94,6 +95,10 @@ android {
             self.assertIn('android:usesCleartextTraffic="true"', manifest)
             self.assertIn("android.permission.READ_MEDIA_IMAGES", manifest)
             self.assertIn('android:scheme="chatbox"', manifest)
+
+            proguard = (app_dir / "proguard-rules.pro").read_text()
+            self.assertIn("-dontwarn com.google.errorprone.annotations.**", proguard)
+            self.assertIn("-dontwarn javax.annotation.**", proguard)
 
 
 if __name__ == "__main__":

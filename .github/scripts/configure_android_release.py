@@ -133,6 +133,19 @@ def patch_manifest(path: Path) -> None:
     tree.write(path, encoding="utf-8", xml_declaration=True)
 
 
+def patch_proguard(path: Path) -> None:
+    text = path.read_text()
+    rules = (
+        "-dontwarn com.google.errorprone.annotations.**",
+        "-dontwarn javax.annotation.**",
+    )
+    missing = [rule for rule in rules if rule not in text]
+    if missing:
+        text = text.rstrip() + "\n\n# Compile-time annotations omitted from Android runtime\n"
+        text += "\n".join(missing) + "\n"
+        path.write_text(text)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--android-dir", type=Path, required=True)
@@ -147,6 +160,7 @@ def main() -> None:
     patch_gradle(app_dir / "build.gradle", args.version_name, args.version_code)
     patch_styles(app_dir / "src/main/res/values/styles.xml")
     patch_manifest(app_dir / "src/main/AndroidManifest.xml")
+    patch_proguard(app_dir / "proguard-rules.pro")
 
 
 if __name__ == "__main__":
