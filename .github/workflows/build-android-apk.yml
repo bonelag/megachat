@@ -53,7 +53,9 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Build mobile renderer
-        run: pnpm exec cross-env CHATBOX_BUILD_TARGET=mobile_app CHATBOX_BUILD_PLATFORM=android electron-vite build
+        run: |
+          pnpm exec cross-env CHATBOX_BUILD_TARGET=mobile_app CHATBOX_BUILD_PLATFORM=android electron-vite build
+          find release/app/dist -type f -name '*.map' -delete
 
       - name: Create Capacitor Android project
         shell: bash
@@ -64,15 +66,41 @@ jobs:
             "appName": "Chatbox",
             "webDir": "release/app/dist/renderer",
             "server": {
-              "androidScheme": "https",
-              "allowNavigation": ["*"]
+              "cleartext": true,
+              "androidScheme": "http"
             },
-            "android": {
-              "allowMixedContent": true
+            "ios": {
+              "scheme": "Chatbox AI"
             },
             "plugins": {
+              "CapacitorSQLite": {
+                "iosDatabaseLocation": "Library/CapacitorDatabase",
+                "iosIsEncryption": true,
+                "iosKeychainPrefix": "angular-sqlite-app-starter",
+                "iosBiometric": {
+                  "biometricAuth": false,
+                  "biometricTitle": "Biometric login for capacitor sqlite"
+                },
+                "androidIsEncryption": false,
+                "androidBiometric": {
+                  "biometricAuth": false,
+                  "biometricTitle": "Biometric login for capacitor sqlite",
+                  "biometricSubTitle": "Log in using your biometric"
+                },
+                "electronIsEncryption": true,
+                "electronWindowsLocation": "C:\\ProgramData\\CapacitorDatabases",
+                "electronMacLocation": "/Volumes/Development_Lacie/Development/Databases",
+                "electronLinuxLocation": "Databases"
+              },
               "SplashScreen": {
-                "launchAutoHide": false
+                "launchAutoHide": false,
+                "androidSplashResourceName": "splash",
+                "androidScaleType": "FIT_CENTER",
+                "showSpinner": false,
+                "splashFullScreen": true,
+                "splashImmersive": true,
+                "layoutName": "launch_screen",
+                "useDialog": true
               }
             }
           }
