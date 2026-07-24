@@ -269,6 +269,8 @@ Help make Chatbox accessible to more people by contributing translations:
 
 ## Development
 
+See [Architecture Overview](./docs/architecture.md) for the process model, module boundaries, storage design, and main runtime flows.
+
 ### Prerequisites
 
 Before you begin, ensure you have the following installed:
