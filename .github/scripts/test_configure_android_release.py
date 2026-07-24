@@ -90,6 +90,9 @@ android {
 
             styles = (values_dir / "styles.xml").read_text()
             self.assertIn("android:windowOptOutEdgeToEdgeEnforcement", styles)
+            self.assertIn("windowSplashScreenAnimatedIcon", styles)
+            self.assertIn("windowSplashScreenAnimationDuration", styles)
+            self.assertNotIn('name="android:background"', styles)
 
             manifest = (app_dir / "src/main/AndroidManifest.xml").read_text()
             self.assertIn('android:usesCleartextTraffic="true"', manifest)

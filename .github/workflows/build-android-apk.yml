@@ -88,7 +88,7 @@ jobs:
         run: |
           test -n "$ANDROID_KEYSTORE_BASE64"
           printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/chatbox-release.p12"
-          VERSION_NAME="$(node -p "require('./package.json').version")"
+          VERSION_NAME="$(node -p "require('./release/app/package.json').version")"
           python .github/scripts/configure_android_release.py \
             --android-dir android \
             --version-name "$VERSION_NAME" \

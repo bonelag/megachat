@@ -72,10 +72,21 @@ def patch_styles(path: Path) -> None:
     if launch_style is None:
         raise RuntimeError("Could not locate AppTheme.NoActionBarLaunch in styles.xml")
 
-    item_name = "android:windowOptOutEdgeToEdgeEnforcement"
-    if not any(item.get("name") == item_name for item in launch_style.findall("item")):
-        item = ET.SubElement(launch_style, "item", {"name": item_name})
-        item.text = "true"
+    for item in list(launch_style.findall("item")):
+        if item.get("name") in {"android:background", "android:windowBackground"}:
+            launch_style.remove(item)
+
+    desired_items = (
+        ("android:windowOptOutEdgeToEdgeEnforcement", "true"),
+        ("windowSplashScreenAnimatedIcon", "@drawable/splash"),
+        ("windowSplashScreenAnimationDuration", "1000"),
+    )
+    existing = {item.get("name"): item for item in launch_style.findall("item")}
+    for item_name, item_value in desired_items:
+        item = existing.get(item_name)
+        if item is None:
+            item = ET.SubElement(launch_style, "item", {"name": item_name})
+        item.text = item_value
 
     ET.indent(tree, space="    ")
     tree.write(path, encoding="utf-8", xml_declaration=True)
