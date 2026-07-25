@@ -5,6 +5,7 @@ import AbstractAISDKModel, { type CallSettings } from '../../../models/abstract-
 import { addAnthropicCacheControl } from '../../../models/anthropic-cache'
 import { ApiError } from '../../../models/errors'
 import type { CallChatCompletionOptions, ChatStreamOptions, ModelStreamPart } from '../../../models/types'
+import { createFetchWithProxy } from '../../../models/utils/fetch-proxy'
 import type { ProviderModelInfo, StreamTextResult } from '../../../types'
 import type { ModelDependencies } from '../../../types/adapters'
 import { normalizeClaudeHost } from '../../../utils/llm_utils'
@@ -17,6 +18,9 @@ interface Options {
   topP?: number
   maxOutputTokens?: number
   stream?: boolean
+  useProxy?: boolean
+  customHeaders?: Array<{ key: string; value: string }>
+  userAgent?: string
 }
 
 export default class CustomClaude extends AbstractAISDKModel {
@@ -33,11 +37,32 @@ export default class CustomClaude extends AbstractAISDKModel {
   }
 
   protected getProvider() {
+    const customHeadersRecord: Record<string, string> = {}
+    if (this.options.customHeaders) {
+      for (const h of this.options.customHeaders) {
+        if (h.key && h.value) {
+          customHeadersRecord[h.key] = h.value
+        }
+      }
+    }
+    if (this.options.userAgent) {
+      customHeadersRecord['User-Agent'] = this.options.userAgent
+    }
+
     return createAnthropic({
       baseURL: this.options.apiHost,
       apiKey: this.options.apiKey,
+      fetch: async (url, init) => {
+        return createFetchWithProxy(
+          this.options.useProxy,
+          this.dependencies,
+          this.options.customHeaders,
+          this.options.userAgent
+        )(url, init)
+      },
       headers: {
         'anthropic-dangerous-direct-browser-access': 'true',
+        ...customHeadersRecord,
       },
     })
   }
@@ -88,6 +113,19 @@ export default class CustomClaude extends AbstractAISDKModel {
       data: { id: string; type: string }[]
     }
     const url = `${this.options.apiHost}/models?limit=990`
+
+    const customHeadersRecord: Record<string, string> = {}
+    if (this.options.customHeaders) {
+      for (const h of this.options.customHeaders) {
+        if (h.key && h.value) {
+          customHeadersRecord[h.key] = h.value
+        }
+      }
+    }
+    if (this.options.userAgent) {
+      customHeadersRecord['User-Agent'] = this.options.userAgent
+    }
+
     const res = await this.dependencies.request.apiRequest({
       url: url,
       method: 'GET',
@@ -95,7 +133,9 @@ export default class CustomClaude extends AbstractAISDKModel {
         'anthropic-version': '2023-06-01',
         'anthropic-dangerous-direct-browser-access': 'true',
         'x-api-key': this.options.apiKey,
+        ...customHeadersRecord,
       },
+      useProxy: this.options.useProxy,
     })
     const json: Response = await res.json()
     if (!json['data']) {

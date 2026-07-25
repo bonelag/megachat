@@ -59,6 +59,16 @@ export const ProviderSettingsSchema = z.object({
   models: z.array(ProviderModelInfoSchema).optional().catch(undefined),
   excludedModels: z.array(z.string()).optional().catch(undefined),
   useProxy: z.boolean().optional().catch(undefined),
+  userAgent: z.string().optional().catch(undefined),
+  customHeaders: z
+    .array(
+      z.object({
+        key: z.string(),
+        value: z.string(),
+      })
+    )
+    .optional()
+    .catch(undefined),
 
   // oauth
   oauth: OAuthCredentialsSchema.optional().catch(undefined),

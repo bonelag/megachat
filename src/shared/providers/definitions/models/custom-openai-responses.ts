@@ -18,6 +18,8 @@ interface Options {
   maxOutputTokens?: number
   stream?: boolean
   useProxy?: boolean
+  customHeaders?: Array<{ key: string; value: string }>
+  userAgent?: string
 }
 
 type FetchFunction = typeof globalThis.fetch
@@ -68,7 +70,12 @@ export default class CustomOpenAIResponses extends AbstractAISDKModel {
   protected getChatModel(options: CallChatCompletionOptions) {
     const { apiHost, apiPath } = this.options
     const provider = this.getProvider(options, (_input, init) =>
-      createFetchWithProxy(this.options.useProxy, this.dependencies)(`${apiHost}${apiPath}`, init)
+      createFetchWithProxy(
+        this.options.useProxy,
+        this.dependencies,
+        this.options.customHeaders,
+        this.options.userAgent
+      )(`${apiHost}${apiPath}`, init)
     )
     return wrapLanguageModel({
       model: provider.responses(this.options.model.modelId),
@@ -77,11 +84,24 @@ export default class CustomOpenAIResponses extends AbstractAISDKModel {
   }
 
   public listModels() {
+    const customHeadersRecord: Record<string, string> = {}
+    if (this.options.customHeaders) {
+      for (const h of this.options.customHeaders) {
+        if (h.key && h.value) {
+          customHeadersRecord[h.key] = h.value
+        }
+      }
+    }
+    if (this.options.userAgent) {
+      customHeadersRecord['User-Agent'] = this.options.userAgent
+    }
+
     return fetchRemoteModels(
       {
         apiHost: this.options.apiHost,
         apiKey: this.options.apiKey,
         useProxy: this.options.useProxy,
+        extraHeaders: customHeadersRecord,
       },
       this.dependencies
     )

@@ -785,6 +785,87 @@ function ProviderSettings({ providerId }: { providerId: string }) {
                 })
               }
             />
+
+            {/* User-Agent Input */}
+            <Stack gap="xxs">
+              <Text span fw="600">
+                {t('Custom User-Agent')}
+              </Text>
+              <TextInput
+                value={providerSettings?.userAgent || ''}
+                placeholder={t('Default (leave blank)') || ''}
+                onChange={(e) =>
+                  setProviderSettings({
+                    userAgent: e.currentTarget.value || undefined,
+                  })
+                }
+              />
+              <Text size="xs" c="chatbox-tertiary">
+                {platform.type === 'web'
+                  ? t(
+                      'Browsers block custom User-Agent. Use the Desktop app or Android/iOS app if your API requires a specific User-Agent. Custom Headers below still work when CORS allows them.'
+                    )
+                  : platform.type === 'mobile'
+                    ? t('Sent via native HTTP so the server receives this User-Agent.')
+                    : t('Applied by the desktop app network layer for requests to this provider host.')}
+              </Text>
+            </Stack>
+
+            {/* Custom Headers */}
+            <Stack gap="xxs">
+              <Text span fw="600">
+                {t('Custom Headers')}
+              </Text>
+              <Stack gap="xs">
+                {(providerSettings?.customHeaders || []).map((header, index) => (
+                  <Flex key={index} gap="xs" align="center">
+                    <TextInput
+                      placeholder={t('Header Name') || ''}
+                      value={header.key}
+                      onChange={(e) => {
+                        const newHeaders = [...(providerSettings?.customHeaders || [])]
+                        newHeaders[index] = { ...newHeaders[index], key: e.currentTarget.value }
+                        setProviderSettings({ customHeaders: newHeaders })
+                      }}
+                      flex={1}
+                    />
+                    <TextInput
+                      placeholder={t('Value') || ''}
+                      value={header.value}
+                      onChange={(e) => {
+                        const newHeaders = [...(providerSettings?.customHeaders || [])]
+                        newHeaders[index] = { ...newHeaders[index], value: e.currentTarget.value }
+                        setProviderSettings({ customHeaders: newHeaders })
+                      }}
+                      flex={1.5}
+                    />
+                    <Button
+                      variant="subtle"
+                      color="red"
+                      onClick={() => {
+                        const newHeaders = (providerSettings?.customHeaders || []).filter((_, i) => i !== index)
+                        setProviderSettings({ customHeaders: newHeaders.length > 0 ? newHeaders : undefined })
+                      }}
+                    >
+                      <ScalableIcon icon={IconTrash} size={16} />
+                    </Button>
+                  </Flex>
+                ))}
+                <Flex justify="flex-start">
+                  <Button
+                    variant="light"
+                    leftSection={<ScalableIcon icon={IconPlus} size={14} />}
+                    onClick={() => {
+                      const newHeaders = [...(providerSettings?.customHeaders || []), { key: '', value: '' }]
+                      setProviderSettings({ customHeaders: newHeaders })
+                    }}
+                    size="xs"
+                  >
+                    {t('Add Header')}
+                  </Button>
+                </Flex>
+              </Stack>
+            </Stack>
           </>
         )}
 

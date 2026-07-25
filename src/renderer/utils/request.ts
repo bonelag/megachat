@@ -38,35 +38,103 @@ async function retryRequest<T>(fn: () => Promise<T>, retry: number, url: string)
   throw requestError || new Error('Unknown error')
 }
 
-function buildHeaders(options: RequestOptions, url: string): Headers {
-  const headers = new Headers(options.headers)
-  headers.set('Content-Type', 'application/json')
+/** Normalize HeadersInit to a plain object (preserves User-Agent; browser Headers may drop it). */
+export function headersToRecord(headers?: RequestInit['headers']): Record<string, string> {
+  const result: Record<string, string> = {}
+  if (!headers) return result
+
+  if (headers instanceof Headers) {
+    headers.forEach((value, key) => {
+      result[key] = value
+    })
+  } else if (Array.isArray(headers)) {
+    for (const [key, val] of headers) {
+      result[key] = val
+    }
+  } else {
+    for (const [key, val] of Object.entries(headers)) {
+      if (val !== undefined && val !== null) {
+        result[key] = String(val)
+      }
+    }
+  }
+  return result
+}
+
+function getHeaderIgnoreCase(record: Record<string, string>, name: string): string | undefined {
+  const lower = name.toLowerCase()
+  for (const [key, value] of Object.entries(record)) {
+    if (key.toLowerCase() === lower) return value
+  }
+  return undefined
+}
+
+function setHeaderIgnoreCase(record: Record<string, string>, name: string, value: string) {
+  for (const key of Object.keys(record)) {
+    if (key.toLowerCase() === name.toLowerCase()) {
+      delete record[key]
+    }
+  }
+  record[name] = value
+}
+
+function hasCustomUserAgent(record: Record<string, string>): boolean {
+  return Boolean(getHeaderIgnoreCase(record, 'User-Agent'))
+}
+
+function buildHeaderRecord(options: RequestOptions, url: string): Record<string, string> {
+  const headers = headersToRecord(options.headers)
+
+  if (!getHeaderIgnoreCase(headers, 'Content-Type')) {
+    setHeaderIgnoreCase(headers, 'Content-Type', 'application/json')
+  }
 
   if (options.useProxy && !isLocalHost(url) && platform.type !== 'mobile') {
-    headers.set('CHATBOX-TARGET-URI', url)
-    headers.set('CHATBOX-PLATFORM', platform.type)
+    setHeaderIgnoreCase(headers, 'CHATBOX-TARGET-URI', url)
+    setHeaderIgnoreCase(headers, 'CHATBOX-PLATFORM', platform.type)
   }
 
   return headers
 }
 
+/**
+ * Direct browser/Electron fetch. Do NOT rewrite URLs to a Vite proxy — that path
+ * broke local API traffic when the middleware was missing or mis-ordered.
+ *
+ * User-Agent:
+ * - Web: browsers forbid setting User-Agent (no-op); request still goes to the real API.
+ * - Desktop Electron: session.webRequest.onBeforeSendHeaders applies custom UA.
+ * - Mobile: CapacitorHttp/native stream can set User-Agent.
+ */
 async function doRequest(url: string, options: RequestOptions): Promise<Response> {
   const { signal, retry = 3, useProxy = false, body, method } = options
   let requestUrl = url
-  const headers = buildHeaders(options, url)
+  const headers = buildHeaderRecord(options, url)
+  const needsNativeUserAgent = hasCustomUserAgent(headers)
 
   if (useProxy && !isLocalHost(url) && platform.type !== 'mobile') {
     const version = await platform.getVersion()
-    headers.set('CHATBOX-VERSION', version || 'unknown')
+    setHeaderIgnoreCase(headers, 'CHATBOX-VERSION', version || 'unknown')
     requestUrl = 'https://cors-proxy.chatboxai.app/proxy-api/completions'
   }
 
   const makeRequest = async () => {
-    if (platform.type === 'mobile' && useProxy) {
+    // Mobile: native HTTP can set User-Agent (browser Headers drops it).
+    if (platform.type === 'mobile' && (useProxy || needsNativeUserAgent)) {
       return handleMobileRequest(requestUrl, method, headers, body, signal)
     }
 
-    const res = await fetch(requestUrl, { method, headers, body, signal })
+    const fetchHeaders = new Headers()
+    for (const [key, value] of Object.entries(headers)) {
+      // Forbidden request header in browsers — skip to avoid confusion; real UA
+      // is applied on desktop via Electron and on mobile via CapacitorHttp.
+      if (key.toLowerCase() === 'user-agent') {
+        continue
+      }
+      fetchHeaders.set(key, value)
+    }
+
+    const res = await fetch(requestUrl, { method, headers: fetchHeaders, body, signal })
     if (!res.ok) {
       const err = await res.text().catch(() => null)
       throw new ApiError(`Status Code ${res.status}`, err ?? undefined)

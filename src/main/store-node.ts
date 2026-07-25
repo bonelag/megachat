@@ -68,7 +68,7 @@ async function autoBackup() {
 
 export function getSettings(): Settings {
   const settings = store.get<'settings'>('settings', defaults.settings())
-  return settings
+  return settings || defaults.settings()
 }
 
 export function getConfig(): Config {

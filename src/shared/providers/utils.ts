@@ -25,6 +25,9 @@ export function createCustomProviderModel(
           topP: settings.topP,
           maxOutputTokens: settings.maxTokens,
           stream: settings.stream,
+          useProxy: providerSetting.useProxy,
+          userAgent: providerSetting.userAgent,
+          customHeaders: providerSetting.customHeaders,
         },
         dependencies
       )
@@ -38,6 +41,9 @@ export function createCustomProviderModel(
           topP: settings.topP,
           maxOutputTokens: settings.maxTokens,
           stream: settings.stream,
+          useProxy: providerSetting.useProxy,
+          userAgent: providerSetting.userAgent,
+          customHeaders: providerSetting.customHeaders,
         },
         dependencies
       )
@@ -53,6 +59,8 @@ export function createCustomProviderModel(
           maxOutputTokens: settings.maxTokens,
           stream: settings.stream,
           useProxy: providerSetting.useProxy,
+          userAgent: providerSetting.userAgent,
+          customHeaders: providerSetting.customHeaders,
         },
         dependencies
       )
@@ -69,6 +77,8 @@ export function createCustomProviderModel(
           maxOutputTokens: settings.maxTokens,
           stream: settings.stream,
           useProxy: providerSetting.useProxy,
+          userAgent: providerSetting.userAgent,
+          customHeaders: providerSetting.customHeaders,
         },
         dependencies
       )

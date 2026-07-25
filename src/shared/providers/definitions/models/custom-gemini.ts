@@ -5,6 +5,7 @@ import { generateText } from 'ai'
 import AbstractAISDKModel, { type CallSettings } from '../../../models/abstract-ai-sdk'
 import { ApiError } from '../../../models/errors'
 import type { CallChatCompletionOptions } from '../../../models/types'
+import { createFetchWithProxy } from '../../../models/utils/fetch-proxy'
 import type { ProviderModelInfo } from '../../../types'
 import type { ModelDependencies } from '../../../types/adapters'
 import { normalizeGoogleThinkingConfig } from '../../../utils/google-thinking'
@@ -19,6 +20,9 @@ interface Options {
   topP?: number
   maxOutputTokens?: number
   stream?: boolean
+  useProxy?: boolean
+  customHeaders?: Array<{ key: string; value: string }>
+  userAgent?: string
 }
 
 export default class CustomGemini extends AbstractAISDKModel {
@@ -42,9 +46,30 @@ export default class CustomGemini extends AbstractAISDKModel {
   }
 
   protected getProvider() {
+    const customHeadersRecord: Record<string, string> = {}
+    if (this.options.customHeaders) {
+      for (const h of this.options.customHeaders) {
+        if (h.key && h.value) {
+          customHeadersRecord[h.key] = h.value
+        }
+      }
+    }
+    if (this.options.userAgent) {
+      customHeadersRecord['User-Agent'] = this.options.userAgent
+    }
+
     return createGoogleGenerativeAI({
       apiKey: this.options.apiKey,
       baseURL: normalizeGeminiHost(this.options.apiHost).apiHost,
+      fetch: async (url, init) => {
+        return createFetchWithProxy(
+          this.options.useProxy,
+          this.dependencies,
+          this.options.customHeaders,
+          this.options.userAgent
+        )(url, init)
+      },
+      headers: customHeadersRecord,
     })
   }
 
@@ -169,10 +194,23 @@ export default class CustomGemini extends AbstractAISDKModel {
 
     try {
       const { apiHost } = normalizeGeminiHost(this.options.apiHost)
+      const customHeadersRecord: Record<string, string> = {}
+      if (this.options.customHeaders) {
+        for (const h of this.options.customHeaders) {
+          if (h.key && h.value) {
+            customHeadersRecord[h.key] = h.value
+          }
+        }
+      }
+      if (this.options.userAgent) {
+        customHeadersRecord['User-Agent'] = this.options.userAgent
+      }
+
       const res = await this.dependencies.request.apiRequest({
         url: `${apiHost}/models?key=${this.options.apiKey}`,
         method: 'GET',
-        headers: {},
+        headers: customHeadersRecord,
+        useProxy: this.options.useProxy,
       })
       const json: Response = await res.json()
 

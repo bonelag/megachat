@@ -315,6 +315,42 @@ if (isDebug) {
 
 // --------- 窗口管理 ---------
 
+/** Treat localhost / 127.0.0.1 / ::1 as the same loopback host. */
+function normalizeHostname(hostname: string): string {
+  const lower = hostname.toLowerCase().replace(/^\[|\]$/g, '')
+  if (lower === 'localhost' || lower === '127.0.0.1' || lower === '::1') {
+    return 'localhost'
+  }
+  return lower
+}
+
+function parseApiHostUrl(apiHost: string): URL | null {
+  try {
+    return new URL(apiHost)
+  } catch {
+    try {
+      return new URL(`http://${apiHost}`)
+    } catch {
+      return null
+    }
+  }
+}
+
+function hostsMatch(requestUrl: string, apiHost: string): boolean {
+  try {
+    const req = new URL(requestUrl)
+    const provider = parseApiHostUrl(apiHost)
+    if (!provider) return false
+
+    const reqPort = req.port || (req.protocol === 'https:' ? '443' : '80')
+    const providerPort = provider.port || (provider.protocol === 'https:' ? '443' : '80')
+
+    return normalizeHostname(req.hostname) === normalizeHostname(provider.hostname) && reqPort === providerPort
+  } catch {
+    return false
+  }
+}
+
 async function createWindow() {
   if (isDebug) {
     // 不在安装 DEBUG 浏览器插件。可能不兼容，所以不如直接在网页里debug
@@ -418,6 +454,45 @@ async function createWindow() {
         // 'Content-Security-Policy': ['*'], // 为了支持代理
       },
     })
+  })
+
+  // Override User-Agent / custom headers for custom providers at the Chromium network layer.
+  // Renderer fetch cannot set User-Agent (forbidden header); this is the desktop-only path.
+  // IMPORTANT: always invoke callback — throwing here aborts the request entirely.
+  session.defaultSession.webRequest.onBeforeSendHeaders((details, callback) => {
+    const requestHeaders = { ...details.requestHeaders }
+    try {
+      const settings = getSettings()
+      const matchedCustomProvider = (settings.customProviders || []).find((cp) => {
+        const providerSetting = settings.providers?.[cp.id]
+        if (!providerSetting || !providerSetting.apiHost) return false
+        return hostsMatch(details.url, providerSetting.apiHost)
+      })
+
+      if (matchedCustomProvider) {
+        const providerSetting = settings.providers?.[matchedCustomProvider.id]
+        if (providerSetting) {
+          if (providerSetting.userAgent) {
+            for (const key of Object.keys(requestHeaders)) {
+              if (key.toLowerCase() === 'user-agent') {
+                delete requestHeaders[key]
+              }
+            }
+            requestHeaders['User-Agent'] = providerSetting.userAgent
+          }
+          if (providerSetting.customHeaders && Array.isArray(providerSetting.customHeaders)) {
+            for (const header of providerSetting.customHeaders) {
+              if (header.key && header.value) {
+                requestHeaders[header.key] = header.value
+              }
+            }
+          }
+        }
+      }
+    } catch (err) {
+      log.error('[onBeforeSendHeaders] failed; continuing without header overrides', err)
+    }
+    callback({ requestHeaders })
   })
 
   // 监听系统主题更新

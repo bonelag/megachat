@@ -2,19 +2,38 @@ import { CapacitorHttp } from '@capacitor/core'
 import { createNativeReadableStream } from '@/native/stream-http'
 import { ApiError } from '../../shared/models/errors'
 
+function toHeaderObject(headers: Headers | Record<string, string>): Record<string, string> {
+  if (headers instanceof Headers) {
+    const headerObj: Record<string, string> = {}
+    headers.forEach((value, key) => {
+      headerObj[key] = value
+    })
+    return headerObj
+  }
+  return { ...headers }
+}
+
+/**
+ * Native HTTP path for mobile. Uses CapacitorHttp / StreamHttp so forbidden browser
+ * headers (notably User-Agent) can actually be sent.
+ */
 export async function handleMobileRequest(
   url: string,
   method: string,
-  headers: Headers,
+  headers: Headers | Record<string, string>,
   body?: RequestInit['body'],
   signal?: AbortSignal
 ): Promise<Response> {
-  // Fix: Convert Headers to plain object without using .entries()
-  const headerObj: Record<string, string> = {}
-  headers.forEach((value, key) => {
-    headerObj[key] = value
-  })
-  const isStreaming = body && typeof body === 'string' && JSON.parse(body).stream === true
+  const headerObj = toHeaderObject(headers)
+
+  let isStreaming = false
+  if (body && typeof body === 'string') {
+    try {
+      isStreaming = JSON.parse(body).stream === true
+    } catch {
+      isStreaming = false
+    }
+  }
 
   if (isStreaming) {
     try {
