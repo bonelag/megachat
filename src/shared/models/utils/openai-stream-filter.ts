@@ -5,6 +5,10 @@
  * when `choices` is missing.
  *
  * Strip those vendor billing events so streaming still completes successfully.
+ *
+ * CRITICAL: Never buffer a streaming response with response.text() — many gateways
+ * return stream:true with Content-Type application/json or missing type. Buffering
+ * waits until the full completion finishes, making TTFT look extremely slow.
  */
 
 function isBillingSummaryPayload(payload: unknown): boolean {
@@ -41,10 +45,11 @@ export function filterOpenAICompatibleSseStream(body: ReadableStream<Uint8Array>
     const decoder = new TextDecoder()
     const encoder = new TextEncoder()
     let buffer = ''
+    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined
 
     return new ReadableStream<Uint8Array>({
         async start(controller) {
-            const reader = body.getReader()
+            reader = body.getReader()
             try {
                 while (true) {
                     const { done, value } = await reader.read()
@@ -63,9 +68,7 @@ export function filterOpenAICompatibleSseStream(body: ReadableStream<Uint8Array>
 
                         if (normalized.startsWith('data:')) {
                             // "data:" or "data: "
-                            const dataContent = normalized.startsWith('data: ')
-                                ? normalized.slice(6)
-                                : normalized.slice(5)
+                            const dataContent = normalized.startsWith('data: ') ? normalized.slice(6) : normalized.slice(5)
                             if (shouldDropSseDataLine(dataContent)) {
                                 continue
                             }
@@ -82,9 +85,7 @@ export function filterOpenAICompatibleSseStream(body: ReadableStream<Uint8Array>
                 if (buffer.length > 0) {
                     const normalized = buffer.endsWith('\r') ? buffer.slice(0, -1) : buffer
                     if (normalized.startsWith('data:')) {
-                        const dataContent = normalized.startsWith('data: ')
-                            ? normalized.slice(6)
-                            : normalized.slice(5)
+                        const dataContent = normalized.startsWith('data: ') ? normalized.slice(6) : normalized.slice(5)
                         if (!shouldDropSseDataLine(dataContent)) {
                             controller.enqueue(encoder.encode(buffer))
                         }
@@ -98,40 +99,70 @@ export function filterOpenAICompatibleSseStream(body: ReadableStream<Uint8Array>
                 controller.error(err)
             } finally {
                 try {
-                    reader.releaseLock()
+                    reader?.releaseLock()
                 } catch {
                     /* ignore */
                 }
             }
         },
-        cancel(reason) {
-            // Best-effort cancel of upstream
+        async cancel(reason) {
             try {
-                void body.cancel(reason)
+                await reader?.cancel(reason)
             } catch {
-                /* ignore */
+                /* ignore locked / closed streams */
             }
         },
     })
 }
 
+function looksLikeSseContentType(contentType: string): boolean {
+    const ct = contentType.toLowerCase()
+    return ct.includes('text/event-stream') || ct.includes('application/x-ndjson') || ct.includes('text/plain')
+}
+
+function requestBodyWantsStream(body: RequestInit['body'] | undefined): boolean {
+    if (typeof body !== 'string') return false
+    try {
+        const parsed: unknown = JSON.parse(body)
+        return Boolean(parsed && typeof parsed === 'object' && !Array.isArray(parsed) && (parsed as { stream?: unknown }).stream === true)
+    } catch {
+        return false
+    }
+}
+
+export type SanitizeOptions = {
+    /** True when the outbound request asked for stream:true */
+    requestWantsStream?: boolean
+    requestBody?: RequestInit['body']
+}
+
 /**
- * If response is SSE, return a cloned response whose body has billing events stripped.
- * Non-SSE responses are returned as-is (except pure billing.summary JSON → clearer error).
+ * If response is a stream (or the client requested stream:true), strip billing SSE
+ * events without buffering. Only fully buffer non-stream JSON for billing-only detection.
  */
-export async function sanitizeOpenAICompatibleResponse(response: Response): Promise<Response> {
+export async function sanitizeOpenAICompatibleResponse(
+    response: Response,
+    options?: SanitizeOptions
+): Promise<Response> {
     if (!response.ok || !response.body) {
         return response
     }
 
     const contentType = response.headers.get('content-type') || ''
-    const isEventStream = contentType.includes('text/event-stream')
+    const wantsStream =
+        options?.requestWantsStream === true ||
+        requestBodyWantsStream(options?.requestBody) ||
+        looksLikeSseContentType(contentType)
 
-    if (isEventStream) {
+    // Streaming path: never await response.text() — that would wait until generation ends.
+    if (wantsStream) {
         const filtered = filterOpenAICompatibleSseStream(response.body)
-        // Rebuild headers without content-length (body size changed)
         const headers = new Headers(response.headers)
         headers.delete('content-length')
+        // Ensure AI SDK treats it as a stream even if upstream lied about content-type
+        if (!contentType.includes('text/event-stream')) {
+            headers.set('Content-Type', 'text/event-stream; charset=utf-8')
+        }
         return new Response(filtered, {
             status: response.status,
             statusText: response.statusText,
@@ -139,10 +170,9 @@ export async function sanitizeOpenAICompatibleResponse(response: Response): Prom
         })
     }
 
-    // Non-stream JSON: if the whole body is a billing summary, surface a clear error
-    // instead of AI_TypeValidationError about missing `choices`.
+    // Non-stream JSON only: safe to buffer for billing.summary detection
     const contentTypeLower = contentType.toLowerCase()
-    if (contentTypeLower.includes('application/json') || contentTypeLower.includes('text/json') || !contentType) {
+    if (contentTypeLower.includes('application/json') || contentTypeLower.includes('text/json')) {
         const text = await response.text()
         try {
             const parsed: unknown = JSON.parse(text)

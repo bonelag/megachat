@@ -159,7 +159,8 @@ export function newConfigs(): Config {
 }
 
 export function getDefaultPrompt() {
-  return 'You are a helpful assistant.'
+  // Empty by default: new chats start without a system prompt unless the user sets one.
+  return ''
 }
 
 export function chatSessionSettings(): SessionSettings {

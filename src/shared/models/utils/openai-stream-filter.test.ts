@@ -93,4 +93,43 @@ describe('sanitizeOpenAICompatibleResponse', () => {
         expect(text).toContain('"content":"A"')
         expect(text).not.toContain('billing.summary')
     })
+
+    it('does not buffer full body when request asked for stream:true even if content-type is application/json', async () => {
+        let resolveMore!: () => void
+        const more = new Promise<void>((r) => {
+            resolveMore = r
+        })
+
+        const stream = new ReadableStream<Uint8Array>({
+            async start(controller) {
+                controller.enqueue(
+                    new TextEncoder().encode('data: {"choices":[{"delta":{"content":"fast"}}]}\n\n')
+                )
+                // Simulate long-running stream — if sanitize buffered with text(), this would block
+                await more
+                controller.enqueue(new TextEncoder().encode('data: [DONE]\n\n'))
+                controller.close()
+            },
+        })
+
+        const response = new Response(stream, {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+        })
+
+        const sanitized = await sanitizeOpenAICompatibleResponse(response, {
+            requestBody: JSON.stringify({ stream: true, messages: [] }),
+        })
+
+        const reader = sanitized.body!.getReader()
+        const first = await reader.read()
+        const text = new TextDecoder().decode(first.value)
+        expect(text).toContain('fast')
+        // Unblock remaining stream before cancel
+        resolveMore()
+        // Drain rest so the producer finishes cleanly
+        while (!(await reader.read()).done) {
+            /* drain */
+        }
+    })
 })

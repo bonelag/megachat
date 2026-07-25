@@ -55,7 +55,8 @@ export function createFetchWithProxy(
         useProxy,
         retry: 0,
       })
-      return sanitizeOpenAICompatibleResponse(response)
+      // Pass request body so stream:true is never fully buffered (TTFT regression).
+      return sanitizeOpenAICompatibleResponse(response, { requestBody: init?.body })
     }
 
     const response = await dependencies.request.apiRequest({

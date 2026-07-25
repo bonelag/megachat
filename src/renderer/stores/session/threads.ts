@@ -112,7 +112,11 @@ export async function refreshContextAndCreateNewThread(sessionId: string) {
   await chatStore.updateSessionWithMessages(session.id, {
     ...session,
     threads: session.threads ? [...session.threads, newThread] : [newThread],
-    messages: systemPrompt ? [systemPrompt] : [createMessage('system', defaults.getDefaultPrompt())],
+    messages: systemPrompt
+      ? [systemPrompt]
+      : defaults.getDefaultPrompt()
+        ? [createMessage('system', defaults.getDefaultPrompt())]
+        : [],
     threadName: '',
   })
 }

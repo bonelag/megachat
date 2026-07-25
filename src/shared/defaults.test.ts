@@ -56,7 +56,7 @@ describe('defaults', () => {
   })
 
   it('getDefaultPrompt() returns expected string', () => {
-    expect(getDefaultPrompt()).toBe('You are a helpful assistant.')
+    expect(getDefaultPrompt()).toBe('')
   })
 
   it('chatSessionSettings() returns provider and modelId', () => {
