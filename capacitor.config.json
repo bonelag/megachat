@@ -1,0 +1,43 @@
+{
+  "appId": "xyz.chatboxapp.chatbox",
+  "appName": "Chatbox",
+  "webDir": "release/app/dist/renderer",
+  "server": {
+    "cleartext": true,
+    "androidScheme": "http"
+  },
+  "ios": {
+    "scheme": "Chatbox AI"
+  },
+  "plugins": {
+    "CapacitorSQLite": {
+      "iosDatabaseLocation": "Library/CapacitorDatabase",
+      "iosIsEncryption": true,
+      "iosKeychainPrefix": "angular-sqlite-app-starter",
+      "iosBiometric": {
+        "biometricAuth": false,
+        "biometricTitle": "Biometric login for capacitor sqlite"
+      },
+      "androidIsEncryption": false,
+      "androidBiometric": {
+        "biometricAuth": false,
+        "biometricTitle": "Biometric login for capacitor sqlite",
+        "biometricSubTitle": "Log in using your biometric"
+      },
+      "electronIsEncryption": true,
+      "electronWindowsLocation": "C:\\ProgramData\\CapacitorDatabases",
+      "electronMacLocation": "/Volumes/Development_Lacie/Development/Databases",
+      "electronLinuxLocation": "Databases"
+    },
+    "SplashScreen": {
+      "launchAutoHide": false,
+      "androidSplashResourceName": "splash",
+      "androidScaleType": "FIT_CENTER",
+      "showSpinner": false,
+      "splashFullScreen": true,
+      "splashImmersive": true,
+      "layoutName": "launch_screen",
+      "useDialog": true
+    }
+  }
+}
