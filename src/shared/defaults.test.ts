@@ -1,6 +1,6 @@
-import { describe, it, expect } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import { chatSessionSettings, getDefaultPrompt, newConfigs, pictureSessionSettings, settings } from './defaults'
-import { ModelProviderEnum, Theme, type Settings, type SessionSettings } from './types'
+import { ModelProviderEnum, type SessionSettings, type Settings, Theme } from './types'
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
@@ -15,6 +15,7 @@ describe('defaults', () => {
     expect(result.showWordCount).toBe(false)
     expect(result.showTokenCount).toBe(false)
     expect(result.showTokenUsed).toBe(true)
+    expect(result.messageLayout).toBe('bubble')
   })
 
   it('settings() returns allowReportingAndTracking as true', () => {
@@ -38,6 +39,7 @@ describe('defaults', () => {
         'sessionListNavNext',
         'sessionListNavPrev',
         'sessionListNavTargetIndex',
+        'messageListRefreshContext',
         'dialogOpenSearch',
         'inputBoxSendMessage',
         'inputBoxSendMessageWithoutResponse',
@@ -46,6 +48,8 @@ describe('defaults', () => {
         'optionSelect',
       ].sort()
     )
+    expect(result.messageListRefreshContext).toBe('mod+shift+n')
+    expect(result.newPictureChat).toBe('')
   })
 
   it('newConfigs() returns object with uuid string', () => {

@@ -5,8 +5,13 @@ export function getHomeWelcomeCardMode(params: {
   isLoggedIn: boolean
   hasLicense: boolean
   hasExpiredLicense: boolean
+  hideForStoreReview?: boolean
 }): HomeWelcomeCardMode {
-  const { providerCount, isLoggedIn, hasLicense, hasExpiredLicense } = params
+  const { providerCount, isLoggedIn, hasLicense, hasExpiredLicense, hideForStoreReview } = params
+
+  if (hideForStoreReview) {
+    return 'none'
+  }
 
   if (providerCount > 0 || hasLicense) {
     return 'none'

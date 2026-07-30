@@ -4,7 +4,8 @@ import type { ProviderModelInfo, ToolUseScope } from '../types'
 import type { ModelDependencies } from '../types/adapters'
 import AbstractAISDKModel from './abstract-ai-sdk'
 import { ApiError } from './errors'
-import type { ModelInterface } from './types'
+import type { CallChatCompletionOptions, ModelInterface } from './types'
+import { isDeepSeekWeakToolUse } from './utils/deepseek'
 import { createFetchWithProxy } from './utils/fetch-proxy'
 
 export interface OpenAICompatibleSettings {
@@ -16,6 +17,8 @@ export interface OpenAICompatibleSettings {
   useProxy?: boolean
   maxOutputTokens?: number
   stream?: boolean
+  customFetch?: typeof globalThis.fetch
+  listModelsFallback?: ProviderModelInfo[]
 }
 
 export default abstract class OpenAICompatible extends AbstractAISDKModel implements ModelInterface {
@@ -28,11 +31,20 @@ export default abstract class OpenAICompatible extends AbstractAISDKModel implem
     super(options, dependencies)
   }
 
-  protected getCallSettings() {
+  protected getCallSettings(options: CallChatCompletionOptions) {
+    const openAICompatibleOptions = options.providerOptions?.openaiCompatible
+    const providerOptions = openAICompatibleOptions
+      ? {
+          openaiCompatible: openAICompatibleOptions,
+          [getOpenAICompatibleProviderOptionsKey(this.name)]: openAICompatibleOptions,
+        }
+      : undefined
+
     return {
       temperature: this.options.temperature,
       topP: this.options.topP,
       maxOutputTokens: this.options.maxOutputTokens,
+      providerOptions,
     }
   }
 
@@ -40,13 +52,7 @@ export default abstract class OpenAICompatible extends AbstractAISDKModel implem
     return true
   }
   isSupportToolUse(scope?: ToolUseScope) {
-    if (
-      scope &&
-      ['web-browsing', 'read-file'].includes(scope) &&
-      /deepseek-(v3|r1)$/.test(this.options.model.modelId.toLowerCase())
-    ) {
-      return false
-    }
+    if (isDeepSeekWeakToolUse(this.options.model.modelId, scope)) return false
     return super.isSupportToolUse()
   }
 
@@ -55,7 +61,7 @@ export default abstract class OpenAICompatible extends AbstractAISDKModel implem
       name: this.name,
       apiKey: this.options.apiKey,
       baseURL: this.options.apiHost,
-      fetch: createFetchWithProxy(this.options.useProxy, this.dependencies),
+      fetch: this.options.customFetch || createFetchWithProxy(this.options.useProxy, this.dependencies),
     })
   }
 
@@ -73,13 +79,21 @@ export default abstract class OpenAICompatible extends AbstractAISDKModel implem
         apiHost: this.options.apiHost,
         apiKey: this.options.apiKey,
         useProxy: this.options.useProxy,
+        customFetch: this.options.customFetch,
       },
       this.dependencies
     ).catch((err) => {
       console.error(err)
+      if (this.options.listModelsFallback) {
+        return this.options.listModelsFallback
+      }
       return []
     })
   }
+}
+
+export function getOpenAICompatibleProviderOptionsKey(name: string) {
+  return name.split('.')[0].trim()
 }
 
 interface ListModelsResponse {
@@ -110,7 +124,7 @@ interface ListModelsResponse {
     }
     canonical_slug?: string
     hugging_face_id?: string
-    per_request_limits?: Record<string, any>
+    per_request_limits?: Record<string, unknown>
     supported_parameters?: string[]
   }[]
 }
@@ -175,7 +189,12 @@ export async function fetchRemoteModels(
       }
 
       // Check for reasoning capability (OpenRouter specific)
-      if (item.pricing?.internal_reasoning && item.pricing.internal_reasoning !== '0') {
+      if (
+        (item.pricing?.internal_reasoning && item.pricing.internal_reasoning !== '0') ||
+        item.supported_parameters?.includes('reasoning') ||
+        item.supported_parameters?.includes('include_reasoning') ||
+        item.supported_parameters?.includes('reasoning_effort')
+      ) {
         capabilities.push('reasoning')
       }
 

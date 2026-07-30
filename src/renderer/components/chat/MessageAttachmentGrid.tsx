@@ -1,7 +1,7 @@
 import type { MessageFile, MessageLink } from '@shared/types'
 import { useQuery } from '@tanstack/react-query'
 import { ChevronDown, ChevronUp } from 'lucide-react'
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import platform from '@/platform'
 import * as toastActions from '@/stores/toastActions'
@@ -22,11 +22,15 @@ export function MessageAttachmentGrid({ files, links, align = 'start' }: Message
 
   const fileItems = files ?? []
   const linkItems = links ?? []
-  const sessionAttachmentIds = Array.from(
-    new Set(fileItems.flatMap((file) => (file.sessionAttachmentId ? [file.sessionAttachmentId] : [])))
+  const sessionAttachmentIds = useMemo(
+    () =>
+      Array.from(
+        new Set(fileItems.flatMap((file) => (file.sessionAttachmentId ? [file.sessionAttachmentId] : [])))
+      ).sort((a, b) => a - b),
+    [fileItems]
   )
   const { data: sessionAttachments, refetch: refetchSessionAttachments } = useQuery({
-    queryKey: ['session-attachment-rag-attachments', ...sessionAttachmentIds.sort((a, b) => a - b)],
+    queryKey: ['session-attachment-rag-attachments', ...sessionAttachmentIds],
     queryFn: async () => {
       if (platform.type !== 'desktop' || sessionAttachmentIds.length === 0) {
         return []
@@ -116,6 +120,7 @@ export function MessageAttachmentGrid({ files, links, align = 'start' }: Message
               filename={file.name}
               fileType={file.fileType}
               byteLength={file.byteLength}
+              parserType={file.parserType}
               storageKey={file.storageKey}
               ragMode={file.ragMode}
               sessionAttachmentAvailability={

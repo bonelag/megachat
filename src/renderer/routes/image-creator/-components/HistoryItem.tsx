@@ -4,7 +4,7 @@ import { IconPhoto, IconPhotoOff, IconTrash } from '@tabler/icons-react'
 import { useCallback, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useBlob } from '@/hooks/useBlob'
-import { blobToDataUrl } from './constants'
+import { blobToDataUrl, isDirectImageSource } from './constants'
 
 export interface HistoryItemProps {
   record: ImageGeneration
@@ -19,6 +19,7 @@ export function HistoryItem({ record, isActive, isMobile, modelDisplayName, onCl
   const { t } = useTranslation()
   const [deletePopoverOpened, setDeletePopoverOpened] = useState(false)
   const firstImage = record.generatedImages[0]
+  const firstThumbnail = record.generatedImageThumbnails?.[0] || firstImage
 
   const handleDeleteClick = useCallback(
     (e: React.MouseEvent) => {
@@ -61,7 +62,7 @@ export function HistoryItem({ record, isActive, isMobile, modelDisplayName, onCl
         }`}
       >
         {firstImage ? (
-          <HistoryThumbnail storageKey={firstImage} />
+          <HistoryThumbnail storageKey={firstThumbnail} />
         ) : (
           <Flex align="center" justify="center" h="100%" className="bg-[var(--chatbox-background-secondary)]">
             <IconPhoto size={24} className="opacity-20" />
@@ -144,9 +145,9 @@ interface HistoryThumbnailProps {
 }
 
 function HistoryThumbnail({ storageKey }: HistoryThumbnailProps) {
-  const isHttpUrl = storageKey.startsWith('http://') || storageKey.startsWith('https://')
-  const { data: blob, isError } = useBlob(isHttpUrl ? undefined : storageKey)
-  const imageUrl = isHttpUrl ? storageKey : blob ? blobToDataUrl(blob) : null
+  const isDirectSource = isDirectImageSource(storageKey)
+  const { data: blob, isError } = useBlob(isDirectSource ? undefined : storageKey)
+  const imageUrl = isDirectSource ? storageKey : blob ? blobToDataUrl(blob) : null
 
   if (isError) {
     return (

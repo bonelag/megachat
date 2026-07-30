@@ -122,8 +122,8 @@ export function createAfetch(platformInfo: PlatformInfo) {
           })
           const requestId = getChatboxRequestId(response, res.headers)
           if (options.parseChatboxRemoteError) {
-            const errorCodeName = getChatboxErrorCode(response)
-            const chatboxAIError = ChatboxAIAPIError.fromCodeName(response, errorCodeName || '', requestId)
+            const backendErrorCode = getChatboxErrorCode(response)
+            const chatboxAIError = ChatboxAIAPIError.fromCodeName(response, backendErrorCode || '', requestId)
             if (chatboxAIError) {
               throw chatboxAIError
             }
@@ -295,8 +295,8 @@ export function createAuthenticatedAfetch(config: AuthenticatedAfetchConfig) {
             })
             const requestId = getChatboxRequestId(response, retryRes.headers)
             if (options.parseChatboxRemoteError) {
-              const errorCodeName = getChatboxErrorCode(response)
-              const chatboxAIError = ChatboxAIAPIError.fromCodeName(response, errorCodeName || '', requestId)
+              const backendErrorCode = getChatboxErrorCode(response)
+              const chatboxAIError = ChatboxAIAPIError.fromCodeName(response, backendErrorCode || '', requestId)
               if (chatboxAIError) {
                 throw chatboxAIError
               }
@@ -320,8 +320,8 @@ export function createAuthenticatedAfetch(config: AuthenticatedAfetchConfig) {
           })
           const requestId = getChatboxRequestId(response, res.headers)
           if (options.parseChatboxRemoteError) {
-            const errorCodeName = getChatboxErrorCode(response)
-            const chatboxAIError = ChatboxAIAPIError.fromCodeName(response, errorCodeName || '', requestId)
+            const backendErrorCode = getChatboxErrorCode(response)
+            const chatboxAIError = ChatboxAIAPIError.fromCodeName(response, backendErrorCode || '', requestId)
             if (chatboxAIError) {
               throw chatboxAIError
             }

@@ -66,14 +66,20 @@ export class ChatboxAIAPIError extends BaseError {
       name: 'token_quota_exhausted',
       code: 10004, // 小于 20000 是为了兼容旧版本
       i18nKey:
-        'You have reached your monthly quota for the {{model}} model. Please <OpenSettingButton>go to Settings</OpenSettingButton> to switch to a different model, view your quota usage, or upgrade your plan.',
+        'You have used up your monthly Chatbox AI quota. Please <OpenSettingButton>go to Settings</OpenSettingButton> to view your quota usage or upgrade your plan.',
     },
-    // 超出配额（免费计划）
+    // 超出每日免费配额
+    free_token_quota_exhausted: {
+      name: 'free_token_quota_exhausted',
+      code: 20039,
+      i18nKey:
+        'You have used up your daily Chatbox AI quota. Please <OpenSettingButton>go to Settings</OpenSettingButton> to view your quota usage or upgrade your plan.',
+    },
     token_quota_exhausted_free: {
       name: 'token_quota_exhausted_free',
-      code: 10004, // 免费计划的每日配额用同一个 code，前端根据 license 类型区分展示
+      code: 20039,
       i18nKey:
-        'You have reached your daily quota for the {{model}} model. Please <OpenSettingButton>go to Settings</OpenSettingButton> to switch to a different model, view your quota usage, or upgrade your plan.',
+        'You have used up your daily Chatbox AI quota. Please <OpenSettingButton>go to Settings</OpenSettingButton> to view your quota usage or upgrade your plan.',
     },
     // 当前套餐不支持该模型
     license_upgrade_required: {
@@ -303,6 +309,12 @@ export class ChatboxAIAPIError extends BaseError {
       i18nKey:
         'The current search provider does not support reading webpages. Please <OpenExtensionSettingButton>choose a different search provider</OpenExtensionSettingButton> that supports this capability.',
     },
+    // Free 用户在工作模式中点数耗尽，但仍可领取一次奖励额度继续当前任务
+    free_agent_mode_token_quota_exhausted: {
+      name: 'free_agent_mode_token_quota_exhausted',
+      code: 20040,
+      i18nKey: 'Your points are used up. Claim free reward quota to continue.',
+    },
   }
   static fromCodeName(response: string, codeName: string, requestId?: string) {
     if (!codeName) {
@@ -313,15 +325,9 @@ export class ChatboxAIAPIError extends BaseError {
     }
     return null
   }
-  static getDetail(code: number, preferredCodeName?: string) {
+  static getDetail(code: number) {
     if (!code) {
       return null
-    }
-    if (preferredCodeName) {
-      const preferred = ChatboxAIAPIError.codeNameMap[preferredCodeName]
-      if (preferred && preferred.code === code) {
-        return preferred
-      }
     }
     for (const name in ChatboxAIAPIError.codeNameMap) {
       if (ChatboxAIAPIError.codeNameMap[name].code === code) {

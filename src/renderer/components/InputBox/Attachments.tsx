@@ -2,7 +2,7 @@ import NiceModal from '@ebay/nice-modal-react'
 import { Tooltip, Typography } from '@mui/material'
 import { ChatboxAIAPIError } from '@shared/models/errors'
 import type { SessionAttachmentIndexingStage } from '@shared/types'
-import { AlertCircle, CheckCircle, Eye, Link, Link2, Loader2, RotateCw, Trash2 } from 'lucide-react'
+import { AlertCircle, CheckCircle, Eye, Link2, Loader2, RotateCw, Trash2 } from 'lucide-react'
 import type { MouseEvent } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
@@ -100,6 +100,7 @@ export function FileMiniCard(props: {
   onDelete: () => void
   status?: 'processing' | 'completed' | 'error'
   statusText?: string
+  parserType?: string
   progressValue?: number
   isTakingLong?: boolean
   errorMessage?: string
@@ -111,6 +112,7 @@ export function FileMiniCard(props: {
     onDelete,
     status,
     statusText,
+    parserType,
     progressValue,
     isTakingLong,
     errorMessage,
@@ -132,7 +134,14 @@ export function FileMiniCard(props: {
 
   // 获取翻译后的错误消息
   const translatedError = getTranslatedErrorMessage(errorMessage, t)
-  const displayedStatusText = status === 'error' ? getErrorStatusLabel(errorMessage, t) : statusText
+  // 解析完成后展示解析结果和点数消耗提示；处理中/错误时优先展示状态文案
+  const miniCardParserLabel = getParserDisplayName(parserType, t)
+  const parserCostLabel = getParserCostLabel(parserType, t)
+  const parserLabel = [miniCardParserLabel, parserCostLabel].filter(Boolean).join('\n')
+  const displayedStatusText =
+    status === 'error'
+      ? getErrorStatusLabel(errorMessage, t)
+      : (statusText ?? (status === 'completed' ? parserLabel : undefined))
   const clampedProgressValue =
     typeof progressValue === 'number' ? Math.max(0, Math.min(100, Math.round(progressValue))) : undefined
 
@@ -169,8 +178,15 @@ export function FileMiniCard(props: {
                       ? 'min-w-0 text-amber-600 text-center'
                       : 'min-w-0 text-gray-500 text-center'
                 }
-                noWrap
-                sx={{ fontSize: '11px', lineHeight: 1.2 }}
+                sx={{
+                  fontSize: '11px',
+                  lineHeight: 1.15,
+                  whiteSpace: 'pre-line',
+                  overflow: 'hidden',
+                  display: '-webkit-box',
+                  WebkitBoxOrient: 'vertical',
+                  WebkitLineClamp: 2,
+                }}
               >
                 {displayedStatusText}
               </Typography>
@@ -223,6 +239,45 @@ function getFileTypeLabel(filename: string, fileType?: string): string {
   return ''
 }
 
+// 展示文档使用的解析器和点数消耗提示。
+// 'sandbox-raw'（Agent 模式原文件）、'none' 及未知值不展示。
+export function getParserDisplayName(
+  parserType: string | undefined,
+  t: (key: string, options?: Record<string, unknown>) => string
+): string | undefined {
+  switch (parserType) {
+    case 'local':
+      return t('Parser: Local')
+    case 'chatbox-ai':
+      return t('Parser: {{parser}}', { parser: 'Chatbox AI' })
+    case 'mineru':
+      return t('Parser: {{parser}}', { parser: 'MinerU' })
+    default:
+      return undefined
+  }
+}
+
+function getParserCostLabel(
+  parserType: string | undefined,
+  t: (key: string, options?: Record<string, unknown>) => string
+): string | undefined {
+  switch (parserType) {
+    case 'local':
+      return t('No points consumed')
+    default:
+      return undefined
+  }
+}
+
+export function getParserTypeLabel(
+  parserType: string | undefined,
+  t: (key: string, options?: Record<string, unknown>) => string
+): string | undefined {
+  const parserName = getParserDisplayName(parserType, t)
+  const costLabel = getParserCostLabel(parserType, t)
+  return [parserName, costLabel].filter(Boolean).join(' · ') || undefined
+}
+
 function getIndexingStageLabel(stage: SessionAttachmentIndexingStage | undefined, t: (key: string) => string) {
   switch (stage) {
     case 'queued':
@@ -256,6 +311,7 @@ export function MessageAttachment(props: {
   storageKey?: string
   fileType?: string
   byteLength?: number
+  parserType?: string
   ragMode?: 'inline' | 'session-retrieval'
   sessionAttachmentAvailability?: 'allowed' | 'blocked'
   sessionAttachmentIndexStatus?: 'pending' | 'indexing' | 'ready' | 'failed'
@@ -277,6 +333,7 @@ export function MessageAttachment(props: {
     storageKey,
     fileType,
     byteLength,
+    parserType,
     ragMode,
     sessionAttachmentAvailability,
     sessionAttachmentIndexStatus,
@@ -304,13 +361,22 @@ export function MessageAttachment(props: {
       } else {
         title = t('Content')
       }
-      await NiceModal.show('content-viewer', { title, storageKey })
+      // 预览窗口展示完整的解析器与索引状态信息
+      const metadata: Array<{ label?: string; value: string }> = []
+      if (parserLabel) metadata.push({ value: parserLabel })
+      if (ragStatusLabel) metadata.push({ label: String(t('Status')), value: String(ragStatusLabel) })
+      await NiceModal.show('content-viewer', {
+        title,
+        storageKey,
+        metadata: metadata.length ? metadata : undefined,
+      })
     }
   }
 
   const isClickable = !!storageKey
   const typeLabel = filename ? getFileTypeLabel(filename, fileType) : ''
   const sizeLabel = formatFileSize(byteLength)
+  const parserLabel = filename ? getParserTypeLabel(parserType, t) : undefined
   const effectiveAvailability = sessionAttachmentAvailability ?? 'allowed'
   const effectiveIndexStatus = sessionAttachmentIndexStatus ?? sessionAttachmentStatus
   const progressValue = getProgressValue(sessionAttachmentEmbeddedChunks, sessionAttachmentTotalChunks)
@@ -338,8 +404,12 @@ export function MessageAttachment(props: {
             ? t('Indexing failed')
             : activeProgressLabel
       : ''
-  const subtitle = [typeLabel, sizeLabel, ragStatusLabel].filter(Boolean).join(' · ')
   const showStatus = ragMode === 'session-retrieval'
+  // 有索引标识（session-retrieval）时，副标题让位给索引状态，避免拥挤/截断；
+  // 完整的解析器与索引信息改在点击后的预览窗口展示。
+  const subtitle = [typeLabel, sizeLabel, showStatus ? undefined : parserLabel, ragStatusLabel]
+    .filter(Boolean)
+    .join(' · ')
   const tooltipTitle =
     showStatus && effectiveAvailability === 'blocked' && sessionAttachmentBlockedReason
       ? `${label}\n${sessionAttachmentBlockedReason}`
@@ -420,67 +490,5 @@ export function MessageAttachment(props: {
         )}
       </div>
     </Tooltip>
-  )
-}
-
-export function LinkMiniCard(props: {
-  url: string
-  onDelete: () => void
-  status?: 'processing' | 'completed' | 'error'
-  errorMessage?: string
-  onErrorClick?: () => void
-}) {
-  const { url, onDelete, status, errorMessage, onErrorClick } = props
-  const { t } = useTranslation()
-  const label = url.replace(/^https?:\/\//, '')
-
-  const handleClick = () => {
-    if (status === 'error' && onErrorClick) {
-      onErrorClick()
-    }
-  }
-
-  // 获取翻译后的错误消息
-  const translatedError = getTranslatedErrorMessage(errorMessage, t)
-
-  return (
-    <div
-      className="w-[100px] h-[100px] p-1 m-1 inline-flex items-center justify-center
-                                bg-white shadow-sm rounded-md border-solid border-gray-400/20
-                                hover:shadow-lg hover:cursor-pointer hover:scale-105 transition-all duration-200
-                                group/file-mini-card relative"
-      onClick={handleClick}
-    >
-      <Tooltip title={status === 'error' && translatedError ? translatedError : url}>
-        <div className="flex flex-col justify-center items-center">
-          <Link className="w-8 h-8 text-black" strokeWidth={1} />
-          <Typography className="w-20 pt-1 text-black text-center" noWrap sx={{ fontSize: '10px' }}>
-            {label}
-          </Typography>
-        </div>
-      </Tooltip>
-
-      {/* Status indicator */}
-      {status && (
-        <div className="absolute bottom-1 left-1">
-          {status === 'processing' && <Loader2 size="16" className="animate-spin text-blue-500" />}
-          {status === 'completed' && <CheckCircle size="16" className="text-green-500" />}
-          {status === 'error' && <AlertCircle size="16" className="text-red-500" />}
-        </div>
-      )}
-
-      {onDelete && (
-        <MiniButton
-          className="hidden group-hover/file-mini-card:inline-block
-                    absolute top-0 right-0 m-1 p-1 rounded-full shadow-lg text-red-500"
-          onClick={(e) => {
-            e.stopPropagation()
-            onDelete()
-          }}
-        >
-          <Trash2 size="18" strokeWidth={2} />
-        </MiniButton>
-      )}
-    </div>
   )
 }

@@ -7,6 +7,7 @@ const {
   authTokensState,
   sessionRagCapabilityState,
   parserState,
+  defaultEmbeddingModelState,
   mockParseFileLocally,
   mockGetSessionRagConfig,
   mockUploadAndCreateUserFile,
@@ -21,6 +22,9 @@ const {
   const authTokens = { hasTokens: true }
   const sessionRagCapability = { enabled: true }
   const parser = { type: 'local' as 'local' | 'chatbox-ai' | 'none' | 'mineru' }
+  const defaultEmbeddingModel = {
+    value: undefined as { provider: string; model: string } | undefined,
+  }
 
   return {
     blobStore: blobs,
@@ -29,6 +33,7 @@ const {
     authTokensState: authTokens,
     sessionRagCapabilityState: sessionRagCapability,
     parserState: parser,
+    defaultEmbeddingModelState: defaultEmbeddingModel,
     mockParseFileLocally: vi.fn(),
     mockGetSessionRagConfig: vi.fn(async () => ({
       models: { embedding: 'chatbox-ai:text-embedding-3-small', rerank: 'chatbox-ai:rerank' },
@@ -87,6 +92,7 @@ vi.mock('./settingsStore', () => ({
     getState: () => ({
       licenseKey: licenseState.key,
       licenseActivationMethod: licenseActivationState.method,
+      defaultEmbeddingModel: defaultEmbeddingModelState.value,
       extension: {
         documentParser: { type: parserState.type },
       },
@@ -157,6 +163,7 @@ describe('preprocessFile local parser fallback', () => {
     authTokensState.hasTokens = true
     sessionRagCapabilityState.enabled = true
     parserState.type = 'local'
+    defaultEmbeddingModelState.value = undefined
     mockParseFileLocally.mockReset()
     mockGetSessionRagConfig.mockClear()
     mockUploadAndCreateUserFile.mockReset()
@@ -220,6 +227,37 @@ describe('preprocessFile local parser fallback', () => {
     expect(result.content).toBe('')
     expect(result.storageKey).toBe('')
     expect(result.error).toBe('local_parser_failed')
+  })
+
+  it('uses local parsing first when Chatbox AI parser is selected', async () => {
+    parserState.type = 'chatbox-ai'
+    const file = createFile('local-first.pdf')
+    blobStore.set('local-key', 'local parsed content')
+    mockParseFileLocally.mockResolvedValueOnce({ isSupported: true, key: 'local-key' })
+
+    const result = await prepareFileAttachment(file, { provider: '', modelId: '' })
+
+    expect(mockParseFileLocally).toHaveBeenCalledWith(file)
+    expect(mockUploadAndCreateUserFile).not.toHaveBeenCalled()
+    expect(result.error).toBeUndefined()
+    expect(result.content).toBe('local parsed content')
+    expect(result.parserType).toBe('local')
+  })
+
+  it('falls back to Chatbox AI when Chatbox AI parser is selected and local parsing is unsupported', async () => {
+    parserState.type = 'chatbox-ai'
+    const file = createFile('cloud-fallback.docx')
+    blobStore.set('remote-key', 'remote parsed document')
+    mockParseFileLocally.mockResolvedValueOnce({ isSupported: false })
+    mockUploadAndCreateUserFile.mockResolvedValueOnce('remote-key')
+
+    const result = await prepareFileAttachment(file, { provider: '', modelId: '' })
+
+    expect(mockParseFileLocally).toHaveBeenCalledWith(file)
+    expect(mockUploadAndCreateUserFile).toHaveBeenCalledWith('licensed-key', file)
+    expect(result.error).toBeUndefined()
+    expect(result.content).toBe('remote parsed document')
+    expect(result.parserType).toBe('chatbox-ai')
   })
 
   it('keeps high-token attachments inline when parsed content stays below byte threshold', async () => {
@@ -316,6 +354,28 @@ describe('preprocessFile local parser fallback', () => {
     expect(result.tokenCountMap?.default).toBe(parsedContent.length)
   })
 
+  it('uses session retrieval for over-threshold attachments without a Chatbox license when a default embedding model is configured', async () => {
+    const file = createFile('byok-large.pdf')
+    const parsedContent = 'a'.repeat(256 * 1024 + 1)
+    licenseState.key = undefined
+    sessionRagCapabilityState.enabled = false
+    defaultEmbeddingModelState.value = {
+      provider: 'openai',
+      model: 'text-embedding-3-small',
+    }
+    blobStore.set('local-key', parsedContent)
+    mockParseFileLocally.mockResolvedValueOnce({ isSupported: true, key: 'local-key' })
+
+    const result = await prepareFileAttachment(file, { provider: '', modelId: '' })
+
+    expect(mockGetSessionRagConfig).not.toHaveBeenCalled()
+    expect(result.error).toBeUndefined()
+    expect(result.ragMode).toBe('session-retrieval')
+    expect(result.sessionAttachmentAvailability).toBe('allowed')
+    expect(result.tokenCountMap?.default).toBeUndefined()
+    expect(result.tokenCountMap?.default_preview).toBeDefined()
+  })
+
   it('keeps very large BYOK attachments inline with a warning', async () => {
     const file = createFile('byok-very-large.pdf')
     const parsedContent = 'a'.repeat(SESSION_ATTACHMENT_RAG_MAX_PARSED_BYTE_LENGTH + 1)
@@ -383,5 +443,37 @@ describe('preprocessFile local parser fallback', () => {
     expect(result.ragMode).toBe('inline')
     expect(result.byteLength).toBe(SESSION_ATTACHMENT_RAG_MAX_PARSED_BYTE_LENGTH + 1)
     expect(result.tokenCountMap?.default).toBe(parsedContent.length)
+  })
+
+  it('backfills raw binary storage for cached non-text files', async () => {
+    const file = createFile('cached.pdf', 'raw-pdf-content')
+    const storageKey = `file:/tmp/${file.name}-${file.size}-${file.lastModified}`
+    const rawStorageKey = `${storageKey}_raw`
+    blobStore.set(storageKey, 'cached parsed content')
+
+    const result = await prepareFileAttachment(file, { provider: '', modelId: '' }, { agentMode: true })
+
+    expect(result.error).toBeUndefined()
+    expect(result.storageKey).toBe(storageKey)
+    expect(result.rawStorageKey).toBe(rawStorageKey)
+    expect(blobStore.get(rawStorageKey)).toMatch(/^data:application\/pdf;base64,/)
+  })
+
+  it('uses raw-only sandbox descriptors for supported documents when agent mode has no parser', async () => {
+    parserState.type = 'none'
+    const file = createFile('no-parser.pdf', 'raw-pdf-content')
+    const storageKey = `file:/tmp/${file.name}-${file.size}-${file.lastModified}`
+    const rawStorageKey = `${storageKey}_raw`
+
+    const result = await prepareFileAttachment(file, { provider: '', modelId: '' }, { agentMode: true })
+
+    expect(mockParseFileLocally).not.toHaveBeenCalled()
+    expect(mockUploadAndCreateUserFile).not.toHaveBeenCalled()
+    expect(result.error).toBeUndefined()
+    expect(result.content).toContain('[File: no-parser.pdf')
+    expect(result.storageKey).toBe(storageKey)
+    expect(result.rawStorageKey).toBe(rawStorageKey)
+    expect(result.parserType).toBe('sandbox-raw')
+    expect(blobStore.get(rawStorageKey)).toMatch(/^data:application\/pdf;base64,/)
   })
 })

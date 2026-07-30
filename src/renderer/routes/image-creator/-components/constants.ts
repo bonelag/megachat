@@ -26,6 +26,14 @@ export function blobToDataUrl(blob: string): string {
   return `data:image/png;base64,${blob}`
 }
 
+export function isHttpImageSource(value: string): boolean {
+  return value.startsWith('http://') || value.startsWith('https://')
+}
+
+export function isDirectImageSource(value: string): boolean {
+  return isHttpImageSource(value) || value.startsWith('data:image/') || value.startsWith('blob:')
+}
+
 export function getBase64ImageSize(base64: string): Promise<{ width: number; height: number }> {
   return new Promise((resolve, reject) => {
     const img = new window.Image()

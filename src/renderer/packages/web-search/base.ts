@@ -51,6 +51,32 @@ abstract class WebSearch {
     return null
   }
 
+  /**
+   * fetch-compatible wrapper over `this.fetch`, for shared implementations
+   * (native-web-search.ts) that take a `fetchFn: typeof fetch`. Keeps the
+   * mobile CapacitorHttp path (CORS bypass) working for shared providers.
+   */
+  fetchCompat: typeof fetch = async (input, init) => {
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+    const headers = formatHeaders(init?.headers as HeadersInit | undefined)
+    let body: unknown = init?.body
+    const contentType = Object.entries(headers).find(([key]) => key.toLowerCase() === 'content-type')?.[1]
+    if (typeof body === 'string' && contentType?.includes('application/json')) {
+      try {
+        body = JSON.parse(body)
+      } catch {}
+    }
+    const data = await this.fetch(url, {
+      method: (init?.method ?? 'GET') as FetchOptions['method'],
+      headers,
+      body: body as FetchOptions['body'],
+      signal: init?.signal ?? undefined,
+      responseType: 'json',
+    })
+    const text = typeof data === 'string' ? data : JSON.stringify(data)
+    return new Response(text, { status: 200, headers: { 'content-type': 'application/json' } })
+  }
+
   async fetch(url: string, options: FetchOptions) {
     if (platform.type === 'mobile') {
       const method = options.method ?? 'GET'

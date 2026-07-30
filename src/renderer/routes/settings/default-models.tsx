@@ -9,6 +9,7 @@ import { ScalableIcon } from '@/components/common/ScalableIcon'
 import ModelSelector from '@/components/ModelSelector'
 import { enrichModelsFromRegistry, useModelRegistryVersion } from '@/packages/model-registry'
 import { useSettingsStore } from '@/stores/settingsStore'
+import { isEmbeddingModel, isRerankModel } from './-defaultModelFilters'
 
 export const Route = createFileRoute('/settings/default-models')({
   component: RouteComponent,
@@ -17,6 +18,7 @@ export const Route = createFileRoute('/settings/default-models')({
 export function RouteComponent() {
   const { t } = useTranslation()
   const { setSettings, ...settings } = useSettingsStore((state) => state)
+  const chatboxAIAutoText = settings.licenseKey ? t('Auto (Use Chatbox AI)')! : t('None')!
 
   return (
     <Stack p="md" gap="xl">
@@ -166,14 +168,94 @@ export function RouteComponent() {
           {t('Chatbox OCRs images with this model and sends the text to models without image support.')}
         </Text>
       </Stack>
+
+      <Stack gap="xs">
+        <Text fw={600}>{t('Default Embedding Model')}</Text>
+
+        <ModelSelector
+          position="bottom-start"
+          showAuto={true}
+          autoText={chatboxAIAutoText}
+          width={320}
+          modelFilter={isEmbeddingModel}
+          selectedProviderId={settings.defaultEmbeddingModel?.provider}
+          selectedModelId={settings.defaultEmbeddingModel?.model}
+          searchPosition="top"
+          onSelect={(provider, model) =>
+            setSettings({
+              defaultEmbeddingModel:
+                provider && model
+                  ? {
+                      provider,
+                      model,
+                    }
+                  : undefined,
+            })
+          }
+        >
+          <ModelSelectContent
+            autoText={chatboxAIAutoText}
+            provider={settings.defaultEmbeddingModel?.provider}
+            model={settings.defaultEmbeddingModel?.model}
+            modelType="embedding"
+          />
+        </ModelSelector>
+
+        <Text c="chatbox-tertiary" size="xs">
+          {t('When selected, Chatbox will use this model instead of the automatic Chatbox AI embedding model.')}
+        </Text>
+      </Stack>
+
+      <Stack gap="xs">
+        <Text fw={600}>{t('Default Reranking Model')}</Text>
+
+        <ModelSelector
+          position="bottom-start"
+          showAuto={true}
+          autoText={chatboxAIAutoText}
+          width={320}
+          modelFilter={isRerankModel}
+          selectedProviderId={settings.defaultRerankModel?.provider}
+          selectedModelId={settings.defaultRerankModel?.model}
+          searchPosition="top"
+          onSelect={(provider, model) =>
+            setSettings({
+              defaultRerankModel:
+                provider && model
+                  ? {
+                      provider,
+                      model,
+                    }
+                  : undefined,
+            })
+          }
+        >
+          <ModelSelectContent
+            autoText={chatboxAIAutoText}
+            provider={settings.defaultRerankModel?.provider}
+            model={settings.defaultRerankModel?.model}
+            modelType="rerank"
+          />
+        </ModelSelector>
+
+        <Text c="chatbox-tertiary" size="xs">
+          {t('When selected, Chatbox will use this model instead of the automatic Chatbox AI reranking model.')}
+        </Text>
+      </Stack>
     </Stack>
   )
 }
 
 const ModelSelectContent = forwardRef<
   HTMLButtonElement,
-  { provider?: string; model?: string; autoText?: string; onClick?: () => void }
->(({ provider, model, autoText, onClick }, ref) => {
+  {
+    provider?: string
+    model?: string
+    autoText?: string
+    onClick?: () => void
+    modelType?: 'chat' | 'embedding' | 'rerank'
+  }
+>(({ provider, model, autoText, onClick, modelType }, ref) => {
   useModelRegistryVersion()
 
   const { t } = useTranslation()
@@ -185,8 +267,10 @@ const ModelSelectContent = forwardRef<
       providers?.[provider]?.models ||
       SystemProviders().find((candidate) => candidate.id === provider)?.defaultSettings?.models ||
       []
-    return enrichModelsFromRegistry(rawModels, provider)
-  }, [provider, providers])
+    return enrichModelsFromRegistry(rawModels, provider).filter((candidate) =>
+      modelType ? candidate.type === modelType : true
+    )
+  }, [provider, providers, modelType])
   const displayText = useMemo(
     () =>
       !provider || !model

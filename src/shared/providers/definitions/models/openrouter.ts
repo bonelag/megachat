@@ -2,6 +2,7 @@ import { createOpenRouter } from '@openrouter/ai-sdk-provider'
 import { extractReasoningMiddleware, wrapLanguageModel } from 'ai'
 import AbstractAISDKModel from '../../../models/abstract-ai-sdk'
 import { fetchRemoteModels } from '../../../models/openai-compatible'
+import type { CallChatCompletionOptions } from '../../../models/types'
 import type { ProviderModelInfo } from '../../../types'
 import type { ModelDependencies } from '../../../types/adapters'
 
@@ -12,6 +13,7 @@ interface Options {
   topP?: number
   maxOutputTokens?: number
   stream?: boolean
+  customFetch?: typeof globalThis.fetch
 }
 
 export default class OpenRouter extends AbstractAISDKModel {
@@ -24,11 +26,16 @@ export default class OpenRouter extends AbstractAISDKModel {
     super(options, dependencies)
   }
 
-  protected getCallSettings() {
+  protected getCallSettings(options: CallChatCompletionOptions) {
     return {
       temperature: this.options.temperature,
       topP: this.options.topP,
       maxOutputTokens: this.options.maxOutputTokens,
+      providerOptions: options.providerOptions?.openrouter
+        ? {
+            openrouter: options.providerOptions.openrouter,
+          }
+        : undefined,
     }
   }
 
@@ -39,6 +46,7 @@ export default class OpenRouter extends AbstractAISDKModel {
         'HTTP-Referer': 'https://chatboxai.app',
         'X-Title': 'Chatbox AI',
       },
+      fetch: this.options.customFetch,
     })
   }
 
@@ -50,7 +58,7 @@ export default class OpenRouter extends AbstractAISDKModel {
     })
   }
 
-  public async listModels(): Promise<ProviderModelInfo[]> {
+  public listModels(): Promise<ProviderModelInfo[]> {
     return fetchRemoteModels(
       {
         apiHost: 'https://openrouter.ai/api/v1',

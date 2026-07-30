@@ -1,4 +1,10 @@
-export const officeExts = ['.pdf', '.docx', '.pptx', '.xlsx', '.odt', '.odp', '.ods']
+export const pdfExts = ['.pdf']
+
+export function isPdfFilePath(filePath: string) {
+  return pdfExts.some((ext) => filePath.toLowerCase().endsWith(ext))
+}
+
+export const officeExts = [...pdfExts, '.docx', '.pptx', '.xlsx', '.odt', '.odp', '.ods']
 
 export function isOfficeFilePath(filePath: string) {
   return officeExts.some((ext) => filePath.toLowerCase().endsWith(ext))

@@ -7,6 +7,7 @@ import { createFetchWithProxy } from '../../../models/utils/fetch-proxy'
 import type { ProviderModelInfo } from '../../../types'
 import type { ModelDependencies } from '../../../types/adapters'
 import { normalizeOpenAIResponsesHostAndPath } from '../../../utils/llm_utils'
+import { normalizeOpenAIReasoningOptions } from '../../../utils/reasoning-control'
 
 interface Options {
   apiKey: string
@@ -22,8 +23,6 @@ interface Options {
   listModelsFallback?: ProviderModelInfo[]
   /** Skip remote model fetching and use listModelsFallback directly (e.g. OAuth tokens that can't access /models) */
   skipRemoteModelList?: boolean
-  /** Force stateless Responses requests so the SDK does not emit item references or persisted response links. */
-  forceStatelessResponses?: boolean
 }
 
 type FetchFunction = typeof globalThis.fetch
@@ -41,22 +40,26 @@ export default class OpenAIResponses extends AbstractAISDKModel {
   }
 
   protected getCallSettings(options: CallChatCompletionOptions) {
-    const openaiProviderOptions = options.providerOptions?.openai
+    const openaiProviderOptions = normalizeOpenAIReasoningOptions(
+      this.options.model.modelId,
+      options.providerOptions?.openai
+    )
 
     return {
       temperature: this.options.temperature,
       topP: this.options.topP,
       maxOutputTokens: this.options.maxOutputTokens,
       stream: this.options.stream,
-      providerOptions:
-        openaiProviderOptions || this.options.forceStatelessResponses
-          ? {
-              openai: {
-                ...openaiProviderOptions,
-                ...(this.options.forceStatelessResponses ? { store: false } : {}),
-              },
-            }
-          : undefined,
+      // Chatbox always sends the full context itself and never relies on the Responses API's
+      // server-side state (previous_response_id / item_reference), which additionally cannot be
+      // resolved across relay/gateway providers. Force store=false so the SDK inlines the full
+      // history and avoids tool-call / item id mismatches (see issue #3728).
+      providerOptions: {
+        openai: {
+          ...openaiProviderOptions,
+          store: false,
+        },
+      },
     }
   }
 

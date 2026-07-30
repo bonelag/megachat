@@ -1,8 +1,6 @@
 import type { Message, MessageFile, MessageLink, TokenCacheKey, TokenCountMap } from '@shared/types'
 import { getLogger } from '@/lib/utils'
 import * as chatStore from '@/stores/chatStore'
-import queryClient from '@/stores/queryClient'
-import { getTaskSession, TASK_SESSION_QUERY_KEY, updateTaskSession } from '@/stores/taskSessionStore'
 import type { AttachmentType, ContentMode, TaskResult, TokenizerType } from './types'
 
 const log = getLogger('token-estimation:persister')
@@ -225,12 +223,6 @@ class ResultPersister {
 
         log.debug('Flush completed for session', { sessionId, updateCount: sessionUpdates.length })
       } catch (error) {
-        const flushedTaskSession = await this.flushTaskSessionUpdates(sessionId, sessionUpdates)
-        if (flushedTaskSession) {
-          log.debug('Flush completed for task session', { sessionId, updateCount: sessionUpdates.length })
-          continue
-        }
-
         log.error('Failed to flush updates for session', { sessionId, error })
       }
     }
@@ -246,23 +238,6 @@ class ResultPersister {
         console.error('[ResultPersister] Listener error:', error)
       }
     }
-  }
-
-  private async flushTaskSessionUpdates(sessionId: string, sessionUpdates: PendingUpdate[]): Promise<boolean> {
-    const taskSession = await getTaskSession(sessionId)
-    if (!taskSession) {
-      return false
-    }
-
-    const messages = applyUpdatesToMessages(taskSession.messages, sessionUpdates)
-    const updated = await updateTaskSession(sessionId, { messages })
-    if (updated) {
-      queryClient.setQueryData([TASK_SESSION_QUERY_KEY, sessionId], updated)
-    } else {
-      queryClient.setQueryData([TASK_SESSION_QUERY_KEY, sessionId], { ...taskSession, messages })
-    }
-
-    return true
   }
 }
 

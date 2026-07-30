@@ -1,7 +1,6 @@
-import * as Sentry from '@sentry/react'
-import { store as keypairStore } from './keypairs'
-import { CHATBOX_BUILD_PLATFORM } from '../variables'
 import NiceModal from '@ebay/nice-modal-react'
+import { CHATBOX_BUILD_PLATFORM } from '../variables'
+import { store as keypairStore } from './keypairs'
 
 // 本次启动是否已经引导过用户评价 App Store
 let hasOpenAppStoreReviewPage = false
@@ -25,7 +24,6 @@ export async function tryOpenAppStoreReviewPage() {
     NiceModal.show('app-store-rating')
   } catch (e) {
     console.error(e)
-    Sentry.captureException(e)
   }
 }
 

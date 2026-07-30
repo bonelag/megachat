@@ -118,9 +118,10 @@ export const webSearchExecutor = async (
   { query }: { query: string },
   { abortSignal }: { abortSignal?: AbortSignal }
 ) => {
+  const provider = getExtensionSettings().webSearch.provider
   const searchResults = await cachified({
     cache,
-    key: `search-context:${query}`,
+    key: `search-context:${provider}:${query}`,
     ttl: 1000 * 60 * 5,
     getFreshValue: () => _searchRelatedResults(query, abortSignal),
   })

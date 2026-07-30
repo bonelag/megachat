@@ -1,11 +1,28 @@
-import * as Sentry from '@sentry/react'
-import { AIProviderNoImplementedPaintError, ApiError, BaseError, NetworkError, OCRError } from '@shared/models/errors'
-import type { Message, ModelProvider, Session, SessionSettings, SessionType, Settings } from '@shared/types'
+import { isExpectedGenerationError } from '@shared/models/error-classification'
+import { ApiError, BaseError, NetworkError, OCRError } from '@shared/models/errors'
+import type {
+  AgentModeValue,
+  Message,
+  ModelProvider,
+  Session,
+  SessionSettings,
+  SessionType,
+  Settings,
+} from '@shared/types'
 import { ModelProviderEnum } from '@shared/types'
 import { identity, pickBy } from 'lodash'
+import {
+  type AgentModeEntrySource,
+  bucketCount,
+  captureAgentModeException,
+  toBooleanString,
+} from '@/analytics/agent-mode'
 import { getModelDisplayName } from '@/packages/model-setting-utils'
+import platform from '@/platform'
+import { reportError } from '@/utils/sentry'
 import { trackEvent } from '@/utils/track'
 import { uiStore } from '../uiStore'
+import { getSessionAgentModeEntry } from './agent-mode'
 
 /**
  * Get session-level web browsing setting
@@ -21,39 +38,64 @@ export function getSessionWebBrowsing(sessionId: string, provider: string | unde
 }
 
 /**
- * Track generation event
+ * Track generation event.
+ * Runs in the message-send critical path, so it must never throw.
  */
 export function trackGenerateEvent(
   sessionId: string,
   settings: SessionSettings,
   globalSettings: Settings,
   sessionType: SessionType | undefined,
-  options?: { operationType?: 'send_message' | 'regenerate' }
+  options?: { operationType?: 'send_message' | 'regenerate'; agentModeEntrySource?: AgentModeEntrySource }
 ) {
-  let providerIdentifier: ModelProvider = settings.provider || 'unknown'
-  if (settings.provider?.startsWith('custom-provider-')) {
-    const providerSettings = globalSettings.providers?.[settings.provider]
-    if (providerSettings?.apiHost) {
-      try {
-        const url = new URL(providerSettings.apiHost)
-        providerIdentifier = `custom:${url.hostname}`
-      } catch {
-        providerIdentifier = `custom:${providerSettings.apiHost}`
+  try {
+    let providerIdentifier: ModelProvider = settings.provider || 'unknown'
+    if (settings.provider?.startsWith('custom-provider-')) {
+      const providerSettings = globalSettings.providers?.[settings.provider]
+      if (providerSettings?.apiHost) {
+        try {
+          const url = new URL(providerSettings.apiHost)
+          providerIdentifier = `custom:${url.hostname}`
+        } catch {
+          providerIdentifier = `custom:${providerSettings.apiHost}`
+        }
+      } else {
+        providerIdentifier = 'custom:unknown'
       }
-    } else {
-      providerIdentifier = 'custom:unknown'
     }
+
+    const webBrowsing = getSessionWebBrowsing(sessionId, settings.provider)
+    const agentModeEntry = getSessionAgentModeEntry(sessionId, { settings })
+    const agentModeActive = platform.type === 'desktop' && agentModeEntry.value === 'on'
+    const agentModeEntrySource: AgentModeEntrySource =
+      options?.agentModeEntrySource ??
+      (agentModeActive ? (agentModeEntry.locked ? 'locked_session' : 'manual') : 'none')
+    const sessionKnowledgeBaseMap = uiStore.getState().sessionKnowledgeBaseMap
+    const knowledgeBaseEnabled = Boolean(sessionKnowledgeBaseMap[sessionId])
+    const enabledMcpCount =
+      (globalSettings.mcp?.servers?.filter((server) => server.enabled).length ?? 0) +
+      (globalSettings.mcp?.enabledBuiltinServers?.length ?? 0)
+    const enabledSkillCount = globalSettings.skills?.enabledSkillNames?.length ?? 0
+    const workingDirectoryCount = settings.workingDirectories?.filter((dir) => dir.trim().length > 0).length ?? 0
+
+    trackEvent('generate', {
+      provider: providerIdentifier,
+      model: settings.modelId || 'unknown',
+      operation_type: options?.operationType || 'unknown',
+      web_browsing_enabled: webBrowsing ? 'true' : 'false',
+      session_type: sessionType || 'chat',
+      agent_mode: agentModeEntry.value,
+      agent_mode_active: toBooleanString(agentModeActive),
+      agent_mode_entry_source: agentModeEntrySource,
+      agent_full_access_enabled: toBooleanString(settings.agentFullAccess === true),
+      has_knowledge_base: toBooleanString(knowledgeBaseEnabled),
+      enabled_mcp_count: bucketCount(enabledMcpCount),
+      enabled_skill_count: bucketCount(enabledSkillCount),
+      working_directory_count: bucketCount(workingDirectoryCount),
+    })
+  } catch (error) {
+    console.warn('trackGenerateEvent failed:', error)
   }
-
-  const webBrowsing = getSessionWebBrowsing(sessionId, settings.provider)
-
-  trackEvent('generate', {
-    provider: providerIdentifier,
-    model: settings.modelId || 'unknown',
-    operation_type: options?.operationType || 'unknown',
-    web_browsing_enabled: webBrowsing ? 'true' : 'false',
-    session_type: sessionType || 'chat',
-  })
 }
 
 /**
@@ -113,19 +155,35 @@ export async function initializeTargetMessage(
 /**
  * Handle generation error and return updated message with error info
  */
-export function handleGenerationError(err: unknown, targetMsg: Message, settings: SessionSettings): Message {
+export function handleGenerationError(
+  err: unknown,
+  targetMsg: Message,
+  settings: SessionSettings,
+  sentryContext?: { operationType?: 'send_message' | 'regenerate'; agentMode?: AgentModeValue }
+): Message {
   const error = !(err instanceof Error) ? new Error(`${err}`) : err
-  const isExpectedOCRError = error instanceof OCRError && error.cause instanceof BaseError
-
-  if (
-    !(
-      error instanceof ApiError ||
-      error instanceof NetworkError ||
-      error instanceof AIProviderNoImplementedPaintError ||
-      isExpectedOCRError
-    )
-  ) {
-    Sentry.captureException(error)
+  if (!isExpectedGenerationError(error)) {
+    if (sentryContext?.agentMode === 'on') {
+      captureAgentModeException(error, {
+        operation: 'generation',
+        provider: settings.provider,
+        model: settings.modelId,
+        agentMode: sentryContext.agentMode,
+        fullAccess: settings.agentFullAccess === true,
+        operationType: sentryContext.operationType,
+      })
+    } else {
+      reportError(error, {
+        domain: 'ai-generation',
+        operation: sentryContext?.operationType ?? 'generation',
+        priority: 'high',
+        tags: settings.provider
+          ? {
+              provider: settings.provider.startsWith('custom-provider-') ? 'custom' : settings.provider,
+            }
+          : undefined,
+      })
+    }
   }
 
   let errorCode: number | undefined

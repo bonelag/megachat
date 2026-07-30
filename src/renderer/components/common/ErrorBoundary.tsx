@@ -40,6 +40,12 @@ export function ErrorBoundary({ children, fallback: CustomFallback, name = 'Erro
       beforeCapture={(scope, error, componentStack) => {
         // Add custom context to Sentry
         scope.setTag('errorBoundary', name)
+        scope.setTag('component', 'ui')
+        scope.setTag('operation', name)
+        scope.setTag('error_domain', 'ui')
+        scope.setTag('error_operation', name)
+        scope.setTag('error_priority', 'critical')
+        scope.setTag('error_handled', 'true')
         scope.setLevel('error')
 
         // Add component stack information if available
@@ -137,6 +143,12 @@ export const SentryErrorBoundary = Sentry.withErrorBoundary(
     ),
     beforeCapture: (scope) => {
       scope.setTag('errorBoundary', 'sentry')
+      scope.setTag('component', 'ui')
+      scope.setTag('operation', 'sentry')
+      scope.setTag('error_domain', 'ui')
+      scope.setTag('error_operation', 'sentry')
+      scope.setTag('error_priority', 'critical')
+      scope.setTag('error_handled', 'true')
       scope.setLevel('error')
     },
   }

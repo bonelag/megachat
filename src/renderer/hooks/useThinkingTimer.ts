@@ -1,6 +1,12 @@
 import { useEffect, useState } from 'react'
 
 /**
+ * Steps (thinking / tool calls) faster than this are not worth surfacing a
+ * duration for, so the UI hides their elapsed time below this threshold.
+ */
+export const MIN_STEP_DURATION_MS = 2000
+
+/**
  * Custom hook for tracking real-time elapsed time for thinking processes
  * Handles cleanup on component unmount and provides smooth 100ms updates
  * @param startTime - The timestamp when thinking started (in milliseconds)

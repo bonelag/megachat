@@ -1,5 +1,6 @@
 import type { Message, MessageImagePart, MessagePicture, SessionSettings } from '@shared/types'
 import { createModel } from '@/adapters'
+import type { AgentModeEntrySource } from '@/analytics/agent-mode'
 import * as appleAppStore from '@/packages/apple_app_store'
 import { generateImage } from '@/packages/model-calls'
 import storage from '@/storage'
@@ -30,7 +31,7 @@ export async function orchestratePictureGeneration(
   targetMsg: Message,
   session: NonNullable<Awaited<ReturnType<typeof chatStore.getSession>>>,
   settings: SessionSettings,
-  options?: { operationType?: 'send_message' | 'regenerate' }
+  options?: { operationType?: 'send_message' | 'regenerate'; agentModeEntrySource?: AgentModeEntrySource }
 ) {
   const globalSettings = settingsStore.getState().getSettings()
 

@@ -71,6 +71,17 @@ export function findModelInRegistry(modelId: string, registry: ProviderModelRegi
  * - nickname: only filled when missing (user may have customized it)
  * - type: only filled when missing
  */
+/**
+ * Look up registry metadata for a model under a given Chatbox provider id.
+ * Useful for providers excluded from automatic enrichment (e.g. ChatboxAI,
+ * which serves upstream vendor model ids but has no registry section of its own).
+ */
+export function getRegistryModelMeta(chatboxProviderId: string, modelId: string): ModelMetadata | undefined {
+  const providerRegistry = getRegistry()[chatboxProviderId]
+  if (!providerRegistry) return undefined
+  return findModelInRegistry(modelId, providerRegistry)
+}
+
 export function enrichModelFromRegistry<T extends { modelId: string; [key: string]: unknown }>(
   model: T,
   chatboxProviderId: string

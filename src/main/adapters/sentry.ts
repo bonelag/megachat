@@ -1,12 +1,25 @@
 import * as Sentry from '@sentry/node'
 import { app } from 'electron'
 import type { SentryAdapter, SentryScope } from '../../shared/utils/sentry_adapter'
-import { getSettings } from '../store-node'
+import { createSentryEventProcessor } from '../../shared/utils/sentry_policy'
+import { getSettings, store } from '../store-node'
 
-function initSentry() {
+const processSentryEvent = createSentryEventProcessor({
+  dedupeOriginalExceptions: true,
+  normalSampleRate: 0.2,
+  source: 'main',
+})
+
+let sentryInitialized = false
+
+function initSentry(): boolean {
+  if (sentryInitialized) {
+    return true
+  }
+
   const settings = getSettings()
   if (!settings.allowReportingAndTracking) {
-    return
+    return false
   }
 
   const version = app.getVersion()
@@ -14,7 +27,7 @@ function initSentry() {
     dsn: 'https://eca691c5e01ebfa05958fca1fcb487a9@sentry.midway.run/697',
     integrations: [],
     environment: process.env.NODE_ENV || 'development',
-    // Performance Monitoring - set to 1.0 since we control sampling in beforeSend
+    // Error sampling is priority-aware in beforeSend.
     sampleRate: 1.0,
     tracesSampler(samplingContext) {
       // For traces related to knowledge-base operations, always sample
@@ -35,12 +48,36 @@ function initSentry() {
       tags: {
         platform: 'desktop',
         app_version: version,
+        error_source: 'main',
       },
     },
+    beforeSend(event, hint) {
+      if (!getSettings().allowReportingAndTracking) {
+        return null
+      }
+      return processSentryEvent(event, hint)
+    },
   })
+  sentryInitialized = true
+  return true
 }
 
 initSentry()
+
+store.onDidAnyChange((settings, previousSettings) => {
+  const reportingEnabled = settings?.settings?.allowReportingAndTracking === true
+  const reportingWasEnabled = previousSettings?.settings?.allowReportingAndTracking === true
+  if (reportingEnabled === reportingWasEnabled) {
+    return
+  }
+
+  if (reportingEnabled) {
+    initSentry()
+  } else {
+    sentryInitialized = false
+    void Sentry.close(2000)
+  }
+})
 
 /**
  * 主进程的 Sentry 适配器实现
@@ -67,3 +104,7 @@ export class MainSentryAdapter implements SentryAdapter {
 }
 
 export const sentry = new MainSentryAdapter()
+
+export function flushSentry(timeout: number): Promise<boolean> {
+  return Sentry.flush(timeout)
+}

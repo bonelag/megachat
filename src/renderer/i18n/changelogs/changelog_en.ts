@@ -1,4 +1,17 @@
 const changelog = `
+## v1.22.1 - 2026.07.28
+1. Added Work Mode: the AI can run code, use tools, work with files on your computer, find past conversations, and generate images to complete complex tasks
+2. Added Skills: install and manage reusable AI abilities, with a regularly updated built-in library
+3. Added complete data backups that include conversations, images, and attachments for export and restore
+4. Redesigned the model picker with search and per-model thinking depth
+5. Added a conversation minimap for navigating long chats
+6. Refreshed onboarding with ready-to-use examples
+7. Added chat archiving and creation time in the sidebar
+8. Added PDF support on mobile
+9. Improved streaming responses, automatic scrolling, and reasoning status display
+10. Updated built-in DeepSeek models and improved compatibility with MCP servers
+11. Various bug fixes and stability improvements
+
 ## v1.21.1 - 2026.06.12
 1. Fixed an issue where the send button could stay disabled after uploading files
 2. Updated the Android app icon

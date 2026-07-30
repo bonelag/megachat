@@ -1,4 +1,4 @@
-import { type AnthropicProviderOptions, createAnthropic } from '@ai-sdk/anthropic'
+import { createAnthropic } from '@ai-sdk/anthropic'
 import type { ModelMessage, ToolSet } from 'ai'
 import AbstractAISDKModel, { type CallSettings } from '../../../models/abstract-ai-sdk'
 import { addAnthropicCacheControl } from '../../../models/anthropic-cache'
@@ -7,6 +7,7 @@ import type { CallChatCompletionOptions, ChatStreamOptions, ModelStreamPart } fr
 import type { ProviderModelInfo, StreamTextResult } from '../../../types'
 import type { ModelDependencies } from '../../../types/adapters'
 import { normalizeClaudeHost } from '../../../utils/llm_utils'
+import { isClaudeAdaptiveThinkingModel, normalizeClaudeReasoningOptions } from '../../../utils/reasoning-control'
 
 interface Options {
   claudeApiKey: string
@@ -39,12 +40,57 @@ export default class Claude extends AbstractAISDKModel {
     return createAnthropic({
       ...authOptions,
       baseURL: normalizeClaudeHost(this.options.claudeApiHost).apiHost,
-      fetch: this.options.customFetch,
+      fetch: this.createFetch(),
       headers: {
         'anthropic-dangerous-direct-browser-access': 'true',
         ...this.options.extraHeaders,
       },
     })
+  }
+
+  private createFetch(): typeof globalThis.fetch | undefined {
+    const baseFetch = this.options.customFetch || globalThis.fetch.bind(globalThis)
+    return (input, init) => {
+      if (typeof init?.body !== 'string') {
+        return baseFetch(input, init)
+      }
+
+      const body = parseJsonObject(init.body)
+      if (!body) {
+        return baseFetch(input, init)
+      }
+
+      let nextBody = body
+      if (
+        isClaudeAdaptiveThinkingModel(this.options.model.modelId) &&
+        isRecord(nextBody.output_config) &&
+        typeof nextBody.output_config.effort === 'string'
+      ) {
+        nextBody = {
+          ...nextBody,
+          thinking: { type: 'adaptive' },
+        }
+      }
+
+      if (isRecord(nextBody.thinking) && nextBody.thinking.type !== 'disabled' && !nextBody.thinking.display) {
+        nextBody = {
+          ...nextBody,
+          thinking: {
+            ...nextBody.thinking,
+            display: 'summarized',
+          },
+        }
+      }
+
+      if (nextBody === body) {
+        return baseFetch(input, init)
+      }
+
+      return baseFetch(input, {
+        ...init,
+        body: JSON.stringify(nextBody),
+      })
+    }
   }
 
   protected getChatModel() {
@@ -54,11 +100,11 @@ export default class Claude extends AbstractAISDKModel {
 
   protected getCallSettings(options: CallChatCompletionOptions): CallSettings {
     const isModelSupportReasoning = this.isSupportReasoning()
-    let providerOptions = {} as { anthropic: AnthropicProviderOptions }
+    let providerOptions: CallSettings['providerOptions'] = {}
     if (isModelSupportReasoning) {
       providerOptions = {
         anthropic: {
-          ...(options.providerOptions?.claude || {}),
+          ...(normalizeClaudeReasoningOptions(this.options.model.modelId, options.providerOptions?.claude) || {}),
         },
       }
     }
@@ -127,4 +173,17 @@ export default class Claude extends AbstractAISDKModel {
         type: 'chat',
       }))
   }
+}
+
+function parseJsonObject(value: string): Record<string, unknown> | undefined {
+  try {
+    const parsed = JSON.parse(value)
+    return isRecord(parsed) ? parsed : undefined
+  } catch {
+    return undefined
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }

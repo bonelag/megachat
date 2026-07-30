@@ -19,6 +19,7 @@ export const ImageGenerationSchema = z.object({
   prompt: z.string(),
   referenceImages: z.array(z.string()), // storage keys
   generatedImages: z.array(z.string()), // storage keys
+  generatedImageThumbnails: z.array(z.string()).optional(), // thumbnail URLs aligned with generatedImages
   createdAt: z.number(),
   model: ImageGenerationModelSchema,
   dalleStyle: z.enum(['vivid', 'natural']).optional(),

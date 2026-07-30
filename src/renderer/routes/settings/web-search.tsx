@@ -11,6 +11,7 @@ import { QUERIT_SEARCH_URL } from '@/packages/web-search/querit'
 import platform from '@/platform'
 import { trackJkClickEvent } from '@/analytics/jk'
 import { JK_EVENTS, JK_PAGE_NAMES } from '@/analytics/jk-events'
+import { WEB_SEARCH_PROVIDERS } from '@/packages/web-search/constants'
 import { useSettingsStore } from '@/stores/settingsStore'
 
 export const Route = createFileRoute('/settings/web-search')({
@@ -99,13 +100,7 @@ export function RouteComponent() {
 
       <AdaptiveSelect
         comboboxProps={{ withinPortal: true, withArrow: true }}
-        data={[
-          { value: 'build-in', label: 'Chatbox AI' },
-          { value: 'bing', label: 'Bing Search (Free)' },
-          { value: 'tavily', label: 'Tavily' },
-          { value: 'bocha', label: 'BoCha' },
-          { value: 'querit', label: 'Querit' },
-        ]}
+        data={WEB_SEARCH_PROVIDERS.map((p) => ({ value: p.value, label: p.label }))}
         value={extension.webSearch.provider}
         onChange={(e) =>
           e &&

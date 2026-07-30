@@ -1,6 +1,6 @@
-import { Snackbar } from '@mui/material'
-import {} from 'react'
+import { Button, Snackbar } from '@mui/material'
 import { useStore } from 'zustand'
+import { navigateToSettings } from '@/modals/Settings'
 import { uiStore } from '@/stores/uiStore'
 import * as toastActions from '../../stores/toastActions'
 
@@ -15,6 +15,22 @@ function Toasts() {
           open
           onClose={() => toastActions.remove(toast.id)}
           message={toast.content}
+          action={
+            toast.action ? (
+              <Button
+                color="inherit"
+                size="small"
+                onClick={() => {
+                  if (toast.action?.settingsPath) {
+                    navigateToSettings(toast.action.settingsPath)
+                  }
+                  toastActions.remove(toast.id)
+                }}
+              >
+                {toast.action.label}
+              </Button>
+            ) : undefined
+          }
           anchorOrigin={{ vertical: 'top', horizontal: 'right' }}
           autoHideDuration={toast.duration ?? 3000}
         />

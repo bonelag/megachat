@@ -1,7 +1,7 @@
 import { Avatar, Badge, Flex, Loader, Text } from '@mantine/core'
 import { createSpotlight, Spotlight, type SpotlightActionData, type SpotlightActionGroupData } from '@mantine/spotlight'
-import type { MarketplaceSkill } from '@shared/types/skills'
-import { IconDownload, IconSearch, IconWorld } from '@tabler/icons-react'
+import type { MarketplaceSkill, SkillInfo } from '@shared/types/skills'
+import { IconDownload, IconReplace, IconSearch } from '@tabler/icons-react'
 import { useInfiniteQuery } from '@tanstack/react-query'
 import { type FC, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -23,6 +23,19 @@ const SEARCH_SCROLL_THRESHOLD = 48
 const SEARCH_DEBOUNCE_MS = 500
 const SEARCH_MIN_QUERY_LENGTH = 2
 
+export function buildDetailsText(
+  source: string,
+  translatedDescription: string,
+  originalDescription: string,
+  translationEnabled: boolean
+): string {
+  const descriptionText =
+    translationEnabled && translatedDescription
+      ? [translatedDescription, originalDescription].filter(Boolean).join(' · ')
+      : originalDescription
+  return [source, descriptionText].filter(Boolean).join(' · ')
+}
+
 function getSearchResultKey(skill: MarketplaceSkill): string {
   if (skill.id) {
     return skill.id
@@ -30,8 +43,115 @@ function getSearchResultKey(skill: MarketplaceSkill): string {
   return `${skill.source}/${skill.skillId || skill.name}`
 }
 
+function getEntryUniqueKey(entry: SkillRegistryEntry | MarketplaceSkill): string {
+  if ('id' in entry && entry.id) {
+    return entry.id
+  }
+  return `${entry.source}/${entry.name}`
+}
+
+function getLastPathSegment(value: string): string {
+  const segments = value.split('/').filter(Boolean)
+  return segments[segments.length - 1] ?? ''
+}
+
+function pushUniqueSkillName(names: string[], value?: string): void {
+  const trimmed = value?.trim()
+  if (trimmed && !names.includes(trimmed)) {
+    names.push(trimmed)
+  }
+}
+
+export function getEntrySkillNameCandidates(entry: SkillRegistryEntry | MarketplaceSkill): string[] {
+  const names: string[] = []
+  pushUniqueSkillName(names, entry.name)
+
+  if ('skillId' in entry) {
+    pushUniqueSkillName(names, entry.skillId)
+  }
+  if ('homepage' in entry && entry.homepage) {
+    pushUniqueSkillName(names, getLastPathSegment(entry.homepage))
+  }
+  if ('id' in entry && entry.id) {
+    pushUniqueSkillName(names, getLastPathSegment(entry.id))
+  }
+
+  return names
+}
+
+function getPrimarySkillKey(entry: SkillRegistryEntry | MarketplaceSkill): string {
+  if ('skillId' in entry && entry.skillId) {
+    return entry.skillId
+  }
+  if ('homepage' in entry && entry.homepage) {
+    const fromHomepage = getLastPathSegment(entry.homepage)
+    if (fromHomepage) {
+      return fromHomepage
+    }
+  }
+  if ('id' in entry && entry.id) {
+    const fromId = getLastPathSegment(entry.id)
+    if (fromId) {
+      return fromId
+    }
+  }
+  return entry.name
+}
+
+export function normalizeSkillSource(source?: string): string {
+  const trimmed = source?.trim()
+  if (!trimmed) {
+    return ''
+  }
+
+  const githubMatch = trimmed.match(/github\.com[:/]([^/\s]+)\/([^/\s]+?)(?:\.git)?(?:[/?#]|$)/i)
+  if (githubMatch) {
+    return `${githubMatch[1]}/${githubMatch[2]}`.toLowerCase()
+  }
+
+  const repoMatch = trimmed.match(/^([^/\s]+)\/([^/\s]+?)(?:\.git)?(?:[/?#]|$)/)
+  if (repoMatch) {
+    return `${repoMatch[1]}/${repoMatch[2]}`.toLowerCase()
+  }
+
+  return trimmed.replace(/\/+$/, '').toLowerCase()
+}
+
+function getMatchingInstalledSkill(
+  installedSkills: SkillInfo[],
+  entry: SkillRegistryEntry | MarketplaceSkill,
+  sourcePredicate: (installedSource: string, entrySource: string) => boolean
+): SkillInfo | undefined {
+  const entryNames = new Set(getEntrySkillNameCandidates(entry))
+  const entrySource = normalizeSkillSource(entry.source)
+  return installedSkills.find((skill) => {
+    if (!entryNames.has(skill.name)) {
+      return false
+    }
+    return sourcePredicate(normalizeSkillSource(skill.source?.repo), entrySource)
+  })
+}
+
+export function isSkillEntryInstalled(
+  installedSkills: SkillInfo[],
+  entry: SkillRegistryEntry | MarketplaceSkill
+): boolean {
+  return !!getMatchingInstalledSkill(installedSkills, entry, (installedSource, entrySource) => {
+    return installedSource === entrySource
+  })
+}
+
+export function getConflictingInstalledSkill(
+  installedSkills: SkillInfo[],
+  entry: SkillRegistryEntry | MarketplaceSkill
+): SkillInfo | undefined {
+  return getMatchingInstalledSkill(installedSkills, entry, (installedSource, entrySource) => {
+    return installedSource !== entrySource
+  })
+}
+
 const SkillsSpotlight: FC<{
-  installedSkillNames: string[]
+  installedSkills: SkillInfo[]
   onInstallComplete: () => void
 }> = (props) => {
   const { t } = useTranslation()
@@ -248,30 +368,18 @@ const SkillsSpotlight: FC<{
     }
   }, [debouncedSearchQuery, fetchNextPage, hasNextPage, isFetchingNextPage, opened])
 
-  const getPrimarySkillKey = useCallback((entry: SkillRegistryEntry | MarketplaceSkill): string => {
-    if ('skillId' in entry && entry.skillId) {
-      return entry.skillId
-    }
-    if ('homepage' in entry && entry.homepage) {
-      const fromHomepage = entry.homepage.split('/').pop()
-      if (fromHomepage) {
-        return fromHomepage
-      }
-    }
-    if ('id' in entry && entry.id) {
-      const fromId = entry.id.split('/').pop()
-      if (fromId) {
-        return fromId
-      }
-    }
-    return entry.name
-  }, [])
-
   const isInstalled = useCallback(
     (entry: SkillRegistryEntry | MarketplaceSkill): boolean => {
-      return props.installedSkillNames.includes(getPrimarySkillKey(entry))
+      return isSkillEntryInstalled(props.installedSkills, entry)
     },
-    [getPrimarySkillKey, props.installedSkillNames]
+    [props.installedSkills]
+  )
+
+  const getConflictingSkill = useCallback(
+    (entry: SkillRegistryEntry | MarketplaceSkill): SkillInfo | undefined => {
+      return getConflictingInstalledSkill(props.installedSkills, entry)
+    },
+    [props.installedSkills]
   )
 
   const handleInstall = useCallback(
@@ -280,8 +388,24 @@ const SkillsSpotlight: FC<{
         return
       }
 
-      const entryKey = getPrimarySkillKey(entry)
-      setInstalling(entryKey)
+      const conflicting = getConflictingSkill(entry)
+      if (conflicting) {
+        const unknownSourceLabel = String(t('unknown source'))
+        const confirmMessage = String(
+          t(
+            'Skill "{{name}}" is already installed from {{existingSource}}. Replace with the version from {{newSource}}?',
+            {
+              name: getPrimarySkillKey(entry),
+              existingSource: conflicting.source?.repo ?? unknownSourceLabel,
+              newSource: entry.source,
+            }
+          )
+        )
+        const confirmReplace = window.confirm(confirmMessage)
+        if (!confirmReplace) return
+      }
+
+      setInstalling(getEntryUniqueKey(entry))
       try {
         const payload: MarketplaceSkill =
           'id' in entry
@@ -320,7 +444,46 @@ const SkillsSpotlight: FC<{
         setInstalling(null)
       }
     },
-    [getPrimarySkillKey, isInstalled, props.onInstallComplete, t]
+    [getConflictingSkill, isInstalled, props.onInstallComplete, t]
+  )
+
+  const buildRightSection = useCallback(
+    (entry: SkillRegistryEntry | MarketplaceSkill, entryInstalled: boolean) => {
+      if (entryInstalled) {
+        return (
+          <Badge size="xs" color="green">
+            {t('Installed')}
+          </Badge>
+        )
+      }
+      if (installing === getEntryUniqueKey(entry)) {
+        return (
+          <Badge size="xs" color="blue">
+            {t('Installing')}
+          </Badge>
+        )
+      }
+      const conflicting = getConflictingSkill(entry)
+      if (conflicting) {
+        return (
+          <Badge size="xs" variant="light" color="orange" radius="sm">
+            <Flex align="center" gap={4}>
+              <ScalableIcon icon={IconReplace} size={10} />
+              {t('Replace {{source}}', { source: conflicting.source?.repo ?? '?' })}
+            </Flex>
+          </Badge>
+        )
+      }
+      return (
+        <Flex align="center" gap={4}>
+          <ScalableIcon icon={IconDownload} size={12} />
+          <Text size="xs" c="dimmed">
+            {entry.installs ?? 0}
+          </Text>
+        </Flex>
+      )
+    },
+    [getConflictingSkill, installing, t]
   )
 
   const actions: (SpotlightActionGroupData | SpotlightActionData)[] = useMemo(() => {
@@ -329,17 +492,13 @@ const SkillsSpotlight: FC<{
     groups.push({
       group: String(t('Popular Skills')),
       actions: SKILLS_POPULAR.map((entry) => {
-        const entryKey = getPrimarySkillKey(entry)
         const entryInstalled = isInstalled(entry)
         const translated = translatedPopular.get(entry.name)
         const translatedTitle = translated?.title && translated.title !== entry.title ? translated.title : ''
         const translatedDescription =
           translated?.description && translated.description !== entry.description ? translated.description : ''
         const label = translationEnabled && translatedTitle ? `${entry.title} · ${translatedTitle}` : entry.title
-        const details =
-          translationEnabled && translatedDescription
-            ? `${translatedDescription} · ${entry.description} · ${entry.source}`
-            : `${entry.description} · ${entry.source}`
+        const details = buildDetailsText(entry.source, translatedDescription, entry.description, translationEnabled)
         return {
           id: `popular-${entry.name}`,
           label,
@@ -349,22 +508,7 @@ const SkillsSpotlight: FC<{
             void handleInstall(entry)
           },
           leftSection: <Avatar name={entry.name} color="initials" size={20} src={entry.icon} />,
-          rightSection: entryInstalled ? (
-            <Badge size="xs" color="green">
-              {t('Installed')}
-            </Badge>
-          ) : installing === entryKey ? (
-            <Badge size="xs" color="blue">
-              {t('Installing')}
-            </Badge>
-          ) : (
-            <Flex align="center" gap={4}>
-              <ScalableIcon icon={IconDownload} size={12} />
-              <Text size="xs" c="dimmed">
-                {entry.installs ?? 0}
-              </Text>
-            </Flex>
-          ),
+          rightSection: buildRightSection(entry, entryInstalled),
         }
       }),
     })
@@ -387,7 +531,6 @@ const SkillsSpotlight: FC<{
       groups.push({
         group: String(t('Search Results')),
         actions: searchResults.map((skill) => {
-          const skillKey = getPrimarySkillKey(skill)
           const skillInstalled = isInstalled(skill)
           const translated = translatedSearch.get(getSearchResultKey(skill))
           const translatedName = translated?.name && translated.name !== skill.name ? translated.name : ''
@@ -395,10 +538,7 @@ const SkillsSpotlight: FC<{
           const translatedDescription =
             translated?.description && translated.description !== originalDescription ? translated.description : ''
           const label = translationEnabled && translatedName ? `${skill.name} · ${translatedName}` : skill.name
-          const details =
-            translationEnabled && translatedDescription
-              ? [translatedDescription, originalDescription, skill.source].filter(Boolean).join(' · ')
-              : [originalDescription, skill.source].filter(Boolean).join(' · ')
+          const details = buildDetailsText(skill.source, translatedDescription, originalDescription, translationEnabled)
           return {
             id: `search-${skill.id || skill.name}`,
             label,
@@ -408,30 +548,7 @@ const SkillsSpotlight: FC<{
               void handleInstall(skill)
             },
             leftSection: <Avatar name={skill.name} color="initials" size={20} />,
-            rightSection: skillInstalled ? (
-              <Badge size="xs" color="green">
-                {t('Installed')}
-              </Badge>
-            ) : installing === skillKey ? (
-              <Badge size="xs" color="blue">
-                {t('Installing')}
-              </Badge>
-            ) : (
-              <Flex align="center" gap={8}>
-                <Flex align="center" gap={2}>
-                  <ScalableIcon icon={IconWorld} size={12} />
-                  <Text size="xs" c="dimmed" lineClamp={1}>
-                    {skill.source}
-                  </Text>
-                </Flex>
-                <Flex align="center" gap={2}>
-                  <ScalableIcon icon={IconDownload} size={12} />
-                  <Text size="xs" c="dimmed">
-                    {skill.installs ?? 0}
-                  </Text>
-                </Flex>
-              </Flex>
-            ),
+            rightSection: buildRightSection(skill, skillInstalled),
           }
         }),
       })
@@ -491,9 +608,8 @@ const SkillsSpotlight: FC<{
 
     return groups
   }, [
-    getPrimarySkillKey,
+    buildRightSection,
     handleInstall,
-    installing,
     isInstalled,
     handleLoadMore,
     hasNextPage,

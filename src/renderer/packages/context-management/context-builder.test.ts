@@ -54,6 +54,18 @@ describe('buildContextForAI', () => {
       expect(result.map((m) => m.id)).toEqual(['m1', 'm2', 'm3', 'm4'])
     })
 
+    it('should exclude fork marker messages', () => {
+      const messages = [
+        createMessage('m1', 'user', 'Hello'),
+        { ...createMessage('fork-marker', 'assistant'), isForkMarker: true },
+        createMessage('m2', 'assistant', 'Hi there'),
+      ]
+
+      const result = buildContextForAI({ messages })
+
+      expect(result.map((m) => m.id)).toEqual(['m1', 'm2'])
+    })
+
     it('should return all messages when compactionPoints is empty array', () => {
       const messages = [createMessage('m1', 'user', 'Hello'), createMessage('m2', 'assistant', 'Hi')]
 

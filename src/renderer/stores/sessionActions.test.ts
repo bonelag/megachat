@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, test, vi } from 'vitest'
-import type { Message, Session, SessionThread } from '../../shared/types'
+import type { Message, Session, SessionMetaRecord, SessionThread } from '../../shared/types'
 
 import * as sessionActions from './sessionActions'
 
@@ -20,14 +20,29 @@ const {
   createSessionMock,
   useSessionMock,
   getSessionMock,
+  listAllSessionsMetaMock,
+  archiveSessionsMock,
+  deleteSessionsMock,
   routerNavigateMock,
+  sessionAgentModeMapMock,
+  setSessionAgentModeMock,
+  lockSessionAgentModeMock,
 } = vi.hoisted(() => ({
   updateSessionWithMessages: vi.fn(),
   updateSessionMock: vi.fn(),
   createSessionMock: vi.fn(),
   useSessionMock: vi.fn(),
   getSessionMock: vi.fn(),
+  listAllSessionsMetaMock: vi.fn(),
+  archiveSessionsMock: vi.fn(),
+  deleteSessionsMock: vi.fn(),
   routerNavigateMock: vi.fn(),
+  sessionAgentModeMapMock: {} as Record<
+    string,
+    { value: 'auto' | 'on' | 'off'; locked: boolean; lockReason: string | null }
+  >,
+  setSessionAgentModeMock: vi.fn(),
+  lockSessionAgentModeMock: vi.fn(),
 }))
 
 vi.hoisted(() => {
@@ -69,6 +84,9 @@ vi.mock('./chatStore', () => ({
   createSession: createSessionMock,
   getSession: getSessionMock,
   useSession: useSessionMock,
+  listAllSessionsMeta: listAllSessionsMetaMock,
+  archiveSessions: archiveSessionsMock,
+  deleteSessions: deleteSessionsMock,
 }))
 
 vi.mock('../platform', () => ({
@@ -133,6 +151,9 @@ vi.mock('@/stores/uiStore', () => ({
     getState: () => ({
       widthFull: false,
       messageScrolling: null,
+      sessionAgentModeMap: sessionAgentModeMapMock,
+      setSessionAgentMode: setSessionAgentModeMock,
+      lockSessionAgentMode: lockSessionAgentModeMock,
       setMessageListElement: vi.fn(),
     }),
   },
@@ -159,6 +180,15 @@ function cloneSession(session: Session): Session {
   return JSON.parse(JSON.stringify(session)) as Session
 }
 
+function makeSessionMeta(id: string, sortOrder: number): SessionMetaRecord {
+  return {
+    id,
+    name: id,
+    sortOrder,
+    createdAt: sortOrder,
+  }
+}
+
 beforeEach(() => {
   uuidQueue.length = 0
   uuidv4Mock.mockClear()
@@ -167,7 +197,32 @@ beforeEach(() => {
   createSessionMock.mockReset()
   useSessionMock.mockReset()
   getSessionMock.mockReset()
+  listAllSessionsMetaMock.mockReset()
+  archiveSessionsMock.mockReset()
+  deleteSessionsMock.mockReset()
   routerNavigateMock.mockReset()
+  for (const key of Object.keys(sessionAgentModeMapMock)) {
+    delete sessionAgentModeMapMock[key]
+  }
+  setSessionAgentModeMock.mockReset()
+  lockSessionAgentModeMock.mockReset()
+})
+
+describe('conversation list cleanup', () => {
+  test('archives sessions outside the kept range instead of deleting them', async () => {
+    listAllSessionsMetaMock.mockResolvedValue([
+      makeSessionMeta('keep-1', 300),
+      makeSessionMeta('keep-2', 200),
+      makeSessionMeta('archive-1', 100),
+      makeSessionMeta('archive-2', 0),
+    ])
+
+    await sessionActions.clearConversationList(2)
+
+    expect(archiveSessionsMock).toHaveBeenCalledTimes(1)
+    expect(archiveSessionsMock).toHaveBeenCalledWith(['archive-1', 'archive-2'])
+    expect(deleteSessionsMock).not.toHaveBeenCalled()
+  })
 })
 
 describe('fork actions', () => {
@@ -525,7 +580,7 @@ describe('fork actions', () => {
     const copiedFork = newSession.messageForksHash?.[copiedPivotId]
     expect(copiedFork).toBeDefined()
     expect(copiedFork?.lists[1].messages[0].id).not.toBe(threadAlternative.id)
-    expect(updateSessionMock).toHaveBeenCalledWith(session.id, { threads: [] })
+    expect(updateSessionWithMessages).toHaveBeenCalledWith(session.id, { threads: [] })
     expect(routerNavigateMock).toHaveBeenCalledWith({
       to: '/session/$sessionId',
       params: { sessionId: 'new-session-thread' },
@@ -583,7 +638,7 @@ describe('fork actions', () => {
     expect(copiedFork).toBeDefined()
     expect(copiedFork?.lists[1].messages[0].id).not.toBe(alternative.id)
 
-    expect(updateSessionMock).toHaveBeenCalledWith(
+    expect(updateSessionWithMessages).toHaveBeenCalledWith(
       session.id,
       expect.objectContaining({
         messages: [historyPivot, historyReply],
@@ -608,10 +663,16 @@ describe('fork actions', () => {
       'copied-thread-list-0',
       'copied-thread-alt',
       'copied-thread-list-1',
-      'copied-thread-id'
+      'copied-thread-id',
+      'copied-fork-marker'
     )
     const rootPivot = makeMessage('root-pivot', 'user')
     const rootReply = makeMessage('root-reply', 'assistant')
+    const existingForkMarker = {
+      ...makeMessage('existing-fork-marker', 'assistant'),
+      isForkMarker: true,
+      forkedFromSessionId: 'original-session',
+    }
     const rootAlternative = makeMessage('root-alt', 'assistant')
     const threadPivot = makeMessage('thread-pivot', 'user')
     const threadReply = makeMessage('thread-reply', 'assistant')
@@ -619,7 +680,7 @@ describe('fork actions', () => {
     const session: Session = {
       id: 'session-copy',
       name: 'Source Session',
-      messages: [rootPivot, rootReply],
+      messages: [rootPivot, rootReply, existingForkMarker],
       threads: [
         {
           id: 'thread-1',
@@ -646,6 +707,9 @@ describe('fork actions', () => {
           createdAt: 2,
         },
       },
+      settings: {
+        agentMode: { value: 'on', locked: true, lockReason: 'message_sent' },
+      },
     }
 
     getSessionMock.mockResolvedValue(session)
@@ -670,6 +734,13 @@ describe('fork actions', () => {
     const copiedThreadPivotId = newSession.threads?.[0].messages[0].id
     expect(copiedThreadPivotId).toBeDefined()
     expect(newSession.messageForksHash?.[copiedThreadPivotId!]).toBeDefined()
+    expect(newSession.messages.filter((message) => message.isForkMarker)).toHaveLength(1)
+    expect(newSession.messages.at(-1)?.id).toBe('copied-fork-marker')
+    expect(newSession.messages.at(-1)?.isForkMarker).toBe(true)
+    expect(newSession.messages.at(-1)?.forkedFromSessionId).toBe(session.id)
+    expect(newSession.settings?.agentMode).toEqual({ value: 'on', locked: true, lockReason: 'message_sent' })
+    expect(setSessionAgentModeMock).not.toHaveBeenCalled()
+    expect(lockSessionAgentModeMock).not.toHaveBeenCalled()
     expect(routerNavigateMock).toHaveBeenCalledWith({
       to: '/session/$sessionId',
       params: { sessionId: 'new-session-copy' },

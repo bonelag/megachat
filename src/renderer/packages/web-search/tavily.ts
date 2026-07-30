@@ -1,4 +1,5 @@
 import { ChatboxAIAPIError } from '@shared/models/errors'
+import { searchNativeWeb } from '@shared/services/native-web-search'
 import type { SearchResult } from '@shared/types'
 import { ofetch } from 'ofetch'
 import WebSearch, { type ParseLinkResult } from './base'
@@ -15,27 +16,8 @@ export class TavilySearch extends WebSearch {
 
   async search(query: string, signal?: AbortSignal): Promise<SearchResult> {
     try {
-      const response = await ofetch('https://api.tavily.com/search', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${this.apiKey}`,
-        },
-        body: {
-          query,
-          search_depth: 'basic',
-          include_domains: [],
-          exclude_domains: [],
-        },
-        signal,
-      })
-
-      const items = (response.results || []).map((result: { title: string; url: string; content: string }) => ({
-        title: result.title,
-        link: result.url,
-        snippet: result.content,
-      }))
-
+      // Shared implementation, also used by the native mobile shell.
+      const items = await searchNativeWeb(query, { provider: 'tavily', apiKey: this.apiKey, signal })
       return { items }
     } catch (error) {
       console.error('Tavily search error:', error)

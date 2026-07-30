@@ -10,7 +10,13 @@ import { useFetchBlob } from '@/hooks/useBlob'
 import { useIsSmallScreen } from '@/hooks/useScreenChange'
 import platform from '@/platform'
 
-import { blobToDataUrl, getBase64ImageSize, getImageSizeFromUrl } from './constants'
+import {
+  blobToDataUrl,
+  getBase64ImageSize,
+  getImageSizeFromUrl,
+  isDirectImageSource,
+  isHttpImageSource,
+} from './constants'
 
 export interface GeneratedImagesGalleryProps {
   images: string[] // CDN URLs or local storage keys
@@ -47,7 +53,7 @@ export const GeneratedImagesGallery = memo(function GeneratedImagesGallery({
         if (!keyOrUrl) return
 
         // If it's a URL, download it directly
-        if (keyOrUrl.startsWith('http://') || keyOrUrl.startsWith('https://')) {
+        if (isHttpImageSource(keyOrUrl)) {
           const filename = `image_${Date.now()}.png`
           platform.exporter.exportByUrl(filename, keyOrUrl)
           return
@@ -126,7 +132,7 @@ function GeneratedImageGalleryItem({
 }: GeneratedImageGalleryItemProps) {
   const { t } = useTranslation()
   const [hovered, setHovered] = useState(false)
-  const isUrl = keyOrUrl.startsWith('http://') || keyOrUrl.startsWith('https://')
+  const isDirectSource = isDirectImageSource(keyOrUrl)
   const fetchBlob = useFetchBlob()
 
   const {
@@ -136,11 +142,17 @@ function GeneratedImageGalleryItem({
   } = useQuery({
     queryKey: ['generated-image-gallery', keyOrUrl],
     queryFn: async () => {
-      if (isUrl) {
+      if (isDirectSource) {
         // For URLs, we need to load the image to get dimensions
         const size = await getImageSizeFromUrl(keyOrUrl)
         const displaySize = calculateDisplaySize(size.width, size.height)
-        return { data: keyOrUrl, ...size, ...displaySize, isUrl: true }
+        return {
+          data: keyOrUrl,
+          ...size,
+          ...displaySize,
+          isDirectSource: true,
+          isHttpSource: isHttpImageSource(keyOrUrl),
+        }
       }
       // For storage keys, read from local storage
       const blob = await fetchBlob(keyOrUrl)
@@ -148,7 +160,7 @@ function GeneratedImageGalleryItem({
       const base64 = blobToDataUrl(blob)
       const size = await getBase64ImageSize(base64)
       const displaySize = calculateDisplaySize(size.width, size.height)
-      return { data: base64, ...size, ...displaySize, isUrl: false }
+      return { data: base64, ...size, ...displaySize, isDirectSource: false, isHttpSource: false }
     },
     staleTime: Infinity,
     gcTime: 60 * 1000,
@@ -165,7 +177,7 @@ function GeneratedImageGalleryItem({
       e.stopPropagation()
       if (!imageData) return
       const filename = `image_${Date.now()}`
-      if (imageData.isUrl) {
+      if (imageData.isHttpSource) {
         void platform.exporter.exportByUrl(`${filename}.png`, imageData.data)
       } else {
         void platform.exporter.exportImageFile(filename, imageData.data)

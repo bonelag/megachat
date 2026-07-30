@@ -1,20 +1,24 @@
 import { ofetch } from 'ofetch'
 import { z } from 'zod'
 import { getLogger } from '@/lib/utils'
+import { type ClaimedAgentModeReward, ClaimFreeAgentModeRewardResponseSchema } from '@/packages/agent-mode-reward'
+import { VibedropEmailRequiredError } from '@/packages/vibedrop'
 import platform from '@/platform'
 import { authInfoStore } from '@/stores/authInfoStore'
-import {
-  CHATBOX_BUILD_CHANNEL,
-  USE_BETA_API,
-  USE_BETA_CHATBOX,
-  USE_LOCAL_API,
-  USE_LOCAL_CHATBOX,
-  USE_NEWDB_API,
-} from '@/variables'
+import { CHATBOX_BUILD_CHANNEL, USE_BETA_CHATBOX, USE_LOCAL_CHATBOX } from '@/variables'
+import { ApiError } from '../../shared/models/errors'
 import * as chatboxaiAPI from '../../shared/request/chatboxai_pool'
 import { createAfetch, createAuthenticatedAfetch, uploadFile } from '../../shared/request/request'
 import {
+  activateNativeLicense,
+  deactivateNativeLicense,
+  type NativeLicenseRequestOptions,
+  validateNativeLicense,
+} from '../../shared/services/native-license'
+import { reportNativeContent } from '../../shared/services/native-report'
+import {
   type ChatboxAILicenseDetail,
+  type ChatboxAIPlanType,
   type Config,
   type CopilotDetail,
   type ModelProvider,
@@ -99,15 +103,7 @@ async function getAuthenticatedAfetch() {
 
 // const RELEASE_ORIGIN = 'https://releases.chatboxai.app'
 export function getAPIOrigin() {
-  if (USE_LOCAL_API) {
-    return 'http://localhost:8002'
-  } else if (USE_BETA_API) {
-    return 'https://api-beta.chatboxai.app'
-  } else if (USE_NEWDB_API) {
-    return 'https://beta-new-db.chatboxai.app'
-  } else {
-    return chatboxaiAPI.getChatboxAPIOrigin()
-  }
+  return chatboxaiAPI.getChatboxAPIOrigin()
 }
 
 export function getChatboxOrigin() {
@@ -539,109 +535,44 @@ export async function parseUserLinkFree(params: { url: string }) {
   return json
 }
 
-export async function webBrowsing(params: { licenseKey: string; query: string }) {
-  type Response = {
-    data: {
-      uuid?: string
-      query: string
-      links: {
-        title: string
-        url: string
-        content: string
-      }[]
-    }
-  }
+/**
+ * Request seam for the Chatbox `build-in` web search provider. Mirrors
+ * `getLicenseRequestOptions`: injects an afetch `fetchFn` (Chatbox error parsing + retry),
+ * the API origin, and the Chatbox platform headers into the shared `searchNativeWeb` call.
+ */
+export async function getChatboxWebSearchRequestOptions(): Promise<{
+  chatboxApiOrigin: string
+  fetchFn: typeof fetch
+  headers: Record<string, string>
+}> {
   const afetch = await getAfetch()
-  const res = await afetch(
-    `${getAPIOrigin()}/api/tool/web-search`,
-    {
-      method: 'POST',
-      headers: {
-        Authorization: params.licenseKey,
-        'Content-Type': 'application/json',
-        ...(await getChatboxHeaders()),
-      },
-      body: JSON.stringify(params),
-    },
-    {
-      parseChatboxRemoteError: true,
-      retry: 2,
-    }
-  )
-  const json: Response = await res.json()
-  return json['data']
+  return {
+    chatboxApiOrigin: getAPIOrigin(),
+    fetchFn: (input, init) => afetch(input, init, { parseChatboxRemoteError: true, retry: 2 }),
+    headers: await getChatboxHeaders(),
+  }
+}
+
+async function getLicenseRequestOptions(): Promise<NativeLicenseRequestOptions> {
+  const afetch = await getAfetch()
+  return {
+    apiOrigin: getAPIOrigin(),
+    fetchFn: (input, init) => afetch(input, init, { parseChatboxRemoteError: true, retry: 5 }),
+    headers: await getChatboxHeaders(),
+  }
 }
 
 export async function activateLicense(params: { licenseKey: string; instanceName: string }) {
-  type Response = {
-    data: {
-      valid: boolean
-      instanceId: string
-      error: string
-    }
-  }
-  const afetch = await getAfetch()
-  const res = await afetch(
-    `${getAPIOrigin()}/api/license/activate`,
-    {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(await getChatboxHeaders()),
-      },
-      body: JSON.stringify(params),
-    },
-    {
-      parseChatboxRemoteError: true,
-      retry: 5,
-    }
-  )
-  const json: Response = await res.json()
-  return json['data']
+  const result = await activateNativeLicense(params.licenseKey, params.instanceName, await getLicenseRequestOptions())
+  return { ...result, error: result.error ?? '' }
 }
 
 export async function deactivateLicense(params: { licenseKey: string; instanceId: string }) {
-  const afetch = await getAfetch()
-  await afetch(
-    `${getAPIOrigin()}/api/license/deactivate`,
-    {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(params),
-    },
-    {
-      parseChatboxRemoteError: true,
-      retry: 5,
-    }
-  )
+  await deactivateNativeLicense(params.licenseKey, params.instanceId, await getLicenseRequestOptions())
 }
 
 export async function validateLicense(params: { licenseKey: string; instanceId: string }) {
-  type Response = {
-    data: {
-      valid: boolean
-    }
-  }
-  const afetch = await getAfetch()
-  const res = await afetch(
-    `${getAPIOrigin()}/api/license/validate`,
-    {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(await getChatboxHeaders()),
-      },
-      body: JSON.stringify(params),
-    },
-    {
-      parseChatboxRemoteError: true,
-      retry: 5,
-    }
-  )
-  const json: Response = await res.json()
-  return json['data']
+  return { valid: await validateNativeLicense(params.licenseKey, params.instanceId, await getLicenseRequestOptions()) }
 }
 
 const RemoteModelInfoSchema = z.object({
@@ -694,15 +625,101 @@ export async function getModelManifest(params: { aiProvider: ModelProvider; lice
   return data.data
 }
 
+const ChatboxAIModelAccessSchema = z.object({
+  available: z.boolean().optional().default(true),
+})
+
+const ChatboxAIModelPriceTierSchema = z.object({
+  max_input_tokens: z.number().optional().default(0),
+  max_output_tokens: z.number().optional().default(0),
+  price_input: z.number(),
+  price_output: z.number(),
+})
+
+const ChatboxAIModelPricingSchema = z.object({
+  tokensPerComputePoint: z.number().optional().default(0),
+  officialInput: z.number().optional().default(0),
+  officialOutput: z.number().optional().default(0),
+  tieredPricing: z.array(ChatboxAIModelPriceTierSchema).optional().default([]),
+})
+
+const ChatboxAIModelInfoSchema = RemoteModelInfoSchema.extend({
+  costLevel: z.string().optional().default(''),
+  description: z.string().optional().default(''),
+  access: ChatboxAIModelAccessSchema.optional().default({ available: true }),
+  pricing: ChatboxAIModelPricingSchema.optional(),
+})
+
+const ChatboxAIModelListResponseSchema = z.object({
+  success: z.boolean().optional(),
+  data: z
+    .object({
+      provider: z.object({
+        id: z.string(),
+        name: z.string(),
+      }),
+      license: z
+        .object({
+          plan: z.string().optional().default('unknown'),
+        })
+        .optional()
+        .default({ plan: 'unknown' }),
+      groups: z.array(
+        z.object({
+          id: z.string(),
+          modelIds: z.array(z.string()),
+          featuredModelIds: z.array(z.string()).optional(),
+        })
+      ),
+      models: z.record(z.string(), ChatboxAIModelInfoSchema),
+      imageModels: z.array(RemoteModelInfoSchema).optional().default([]),
+      links: z
+        .object({
+          modelPricing: z.string().optional(),
+          upgrade: z.string().optional(),
+        })
+        .optional(),
+    })
+    .passthrough(),
+})
+
+export type ChatboxAIModelList = z.infer<typeof ChatboxAIModelListResponseSchema>['data']
+
+export async function getChatboxAIModelList(params: { licenseKey?: string; language?: string }) {
+  const afetch = await getAfetch()
+  const res = await afetch(
+    `${getAPIOrigin()}/api/chatbox_ai/model_list`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(await getChatboxHeaders()),
+      },
+      body: JSON.stringify({
+        licenseKey: params.licenseKey,
+        language: params.language,
+      }),
+    },
+    {
+      parseChatboxRemoteError: true,
+      retry: 2,
+    }
+  )
+  const { success, data, error } = ChatboxAIModelListResponseSchema.safeParse(await res.json())
+  if (!success) {
+    log.error('getChatboxAIModelList error', error)
+    throw error
+  }
+  return data.data
+}
+
 export async function reportContent(params: { id: string; type: string; details: string }) {
   const afetch = await getAfetch()
-  await afetch(`${getAPIOrigin()}/api/report_content`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(await getChatboxHeaders()),
-    },
-    body: JSON.stringify(params),
+  await reportNativeContent({
+    ...params,
+    apiOrigin: getAPIOrigin(),
+    fetchFn: (input, init) => afetch(input, init),
+    headers: await getChatboxHeaders(),
   })
 }
 
@@ -976,12 +993,52 @@ export async function getUserProfile() {
   return json.data
 }
 
+/**
+ * Issue (or fetch the cached) VibeDrop publish key for the logged-in user.
+ * chatbox-backend acts as a trusted VibeDrop partner: it derives the email from
+ * the JWT and returns a key bound to that account. Throws
+ * VibedropEmailRequiredError when the account has no email.
+ */
+export async function issueVibedropKey(): Promise<{ vdKey: string; tier: string }> {
+  const afetch = await getAuthenticatedAfetch()
+  try {
+    const res = await afetch(
+      `${getAPIOrigin()}/api/vibedrop/issue-key`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(await getChatboxHeaders()),
+        },
+      },
+      // No retry: issue-key is a fast upsert; email_required is a deterministic
+      // 400 and retrying it just wastes a round-trip (afetch retries all non-2xx).
+      { retry: 0 }
+    )
+    const json: { vd_key: string; tier: string } = await res.json()
+    return { vdKey: json.vd_key, tier: json.tier }
+  } catch (e) {
+    if (e instanceof ApiError && e.responseBody) {
+      try {
+        const parsed = JSON.parse(e.responseBody)
+        if (parsed?.error?.code === 'email_required') {
+          throw new VibedropEmailRequiredError('email required')
+        }
+      } catch (parseErr) {
+        if (parseErr instanceof VibedropEmailRequiredError) throw parseErr
+      }
+    }
+    throw e
+  }
+}
+
 export interface UserLicense {
   id: number
   key: string
   status: string
   platform: string
   product_name: string
+  plan?: ChatboxAIPlanType
   payment_type: string
   image_usage: number
   unified_token_usage: number
@@ -1022,6 +1079,30 @@ export async function listLicensesByUser(): Promise<UserLicense[]> {
   return json.data
 }
 
+export async function claimFreeAgentModeReward(licenseKey: string): Promise<ClaimedAgentModeReward> {
+  const normalizedLicenseKey = licenseKey.trim()
+  if (!normalizedLicenseKey) {
+    throw new Error('A license key is required to claim the Agent Mode reward')
+  }
+
+  const afetch = await getAfetch()
+  const res = await afetch(
+    `${getAPIOrigin()}/api/license/claim-free-agent-mode-reward`,
+    {
+      method: 'POST',
+      headers: {
+        ...(await getChatboxHeaders()),
+        Authorization: `Bearer ${normalizedLicenseKey}`,
+      },
+    },
+    {
+      parseChatboxRemoteError: true,
+      retry: 0,
+    }
+  )
+  return ClaimFreeAgentModeRewardResponseSchema.parse(await res.json())
+}
+
 // ========== Image Generation API ==========
 
 const IMAGE_GEN_API_ORIGIN = getAPIOrigin()
@@ -1044,6 +1125,7 @@ const ImageGenerationItemSchema = z.object({
   status: z.enum(['pending', 'processing', 'completed', 'failed']),
   created_at: z.string(),
   image_url: z.string().optional(),
+  thumbnail_url: z.string().optional(),
   generated_at: z.string().optional(),
   error_code: z.string().optional(),
   error_message: z.string().optional(),
@@ -1110,7 +1192,7 @@ export async function pollImageTask(
   return ImageGenerationTaskResponseSchema.parse(json)
 }
 
-const POLL_INTERVAL_MS = 2000
+export const IMAGE_GENERATION_POLL_INTERVAL_MS = 2000
 
 export async function pollTaskUntilComplete(
   taskId: string,
@@ -1132,6 +1214,6 @@ export async function pollTaskUntilComplete(
       return result
     }
 
-    await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS))
+    await new Promise((resolve) => setTimeout(resolve, IMAGE_GENERATION_POLL_INTERVAL_MS))
   }
 }

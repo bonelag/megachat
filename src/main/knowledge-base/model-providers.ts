@@ -8,6 +8,7 @@ import { parseKnowledgeBaseModelString } from '../../shared/utils/knowledge-base
 import { createModel } from '../adapters'
 import { sentry } from '../adapters/sentry'
 import { cache } from '../cache'
+import { getDefaultEmbeddingModelString, getDefaultRerankModelString } from '../rag-default-models'
 import { getSettings, store } from '../store-node'
 import { getLogger } from '../util'
 import { getDatabase } from './db'
@@ -106,7 +107,8 @@ export async function getEmbeddingProvider(kbId: number) {
           throw error
         }
 
-        const embeddingModel = rs.rows[0].embedding_model as string
+        const embeddingModel =
+          (rs.rows[0].embedding_model as string | undefined) || getDefaultEmbeddingModelString(getSettings())
         if (!embeddingModel) {
           log.error(`kb:embedding:${kbId} embeddingModel not set`)
           const error = new Error('embeddingModel not set')
@@ -244,7 +246,8 @@ export async function getRerankProvider(kbId: number) {
           throw error
         }
 
-        const rerankModel = rs.rows[0].rerank_model as string
+        const rerankModel =
+          (rs.rows[0].rerank_model as string | undefined) || getDefaultRerankModelString(getSettings())
         if (!rerankModel) {
           return null
         }

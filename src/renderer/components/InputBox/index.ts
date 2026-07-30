@@ -1,5 +1,5 @@
 // Re-export named exports
-
+export { default as AgentModeButton } from './AgentModeButton'
 export { desktopActionIconProps, mobileActionIconProps } from './actionIconStyles'
 export { ImageUploadButton } from './ImageUploadButton'
 export { ImageUploadInput } from './ImageUploadInput'

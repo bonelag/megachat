@@ -1,4 +1,3 @@
-import * as shellQuote from 'shell-quote'
 import { v4 as uuid } from 'uuid'
 import { z } from 'zod'
 import type { MCPServerConfig } from '@/packages/mcp/types'
@@ -38,14 +37,80 @@ export type MCPServerConfigFormValues = MCPServerConfig<
     }
 >
 
+// MCP stdio transports spawn argv directly, so only parse argument boundaries and quotes without shell expansion.
+function parseCommandLine(commandLine: string): string[] {
+  const args: string[] = []
+  let current = ''
+  let quote: "'" | '"' | undefined
+  let tokenStarted = false
+
+  for (let index = 0; index < commandLine.length; index++) {
+    const char = commandLine[index]
+    const next = commandLine[index + 1]
+
+    if (quote === "'") {
+      if (char === quote) {
+        quote = undefined
+      } else {
+        current += char
+      }
+      tokenStarted = true
+      continue
+    }
+
+    if (quote === '"') {
+      if (char === quote) {
+        quote = undefined
+      } else if (char === '\\' && (next === '\\' || next === '"')) {
+        current += next
+        index++
+      } else {
+        current += char
+      }
+      tokenStarted = true
+      continue
+    }
+
+    if (char === "'" || char === '"') {
+      quote = char
+      tokenStarted = true
+    } else if (char === '\\' && next && (/\s/.test(next) || next === '\\' || next === "'" || next === '"')) {
+      current += next
+      tokenStarted = true
+      index++
+    } else if (/\s/.test(char)) {
+      if (tokenStarted) {
+        args.push(current)
+        current = ''
+        tokenStarted = false
+      }
+    } else {
+      current += char
+      tokenStarted = true
+    }
+  }
+
+  if (tokenStarted) {
+    args.push(current)
+  }
+  return args
+}
+
+function quoteCommandArg(arg: string): string {
+  if (/^[\w@%+=:,./-]+$/.test(arg)) {
+    return arg
+  }
+  return `'${arg.replace(/'/g, String.raw`'\''`)}'`
+}
+
 export function getConfigFromFormValues(values: MCPServerConfigFormValues): MCPServerConfig {
   let transport: MCPServerConfig['transport']
   if (values.transport.type === 'stdio') {
-    const [command, ...args] = shellQuote.parse(values.transport.command)
+    const [command, ...args] = parseCommandLine(values.transport.command)
     transport = {
       type: 'stdio',
-      command: command.toString(),
-      args: args.filter((arg) => typeof arg === 'string'),
+      command,
+      args,
       env: values.transport.env ? envUtils.parse(values.transport.env) : undefined,
     }
   } else {
@@ -68,7 +133,7 @@ export function getFormValuesFromConfig(config: MCPServerConfig): MCPServerConfi
   if (config.transport.type === 'stdio') {
     transport = {
       type: 'stdio',
-      command: `${config.transport.command} ${config.transport.args.join(' ')}`,
+      command: [config.transport.command, ...config.transport.args].map(quoteCommandArg).join(' '),
       env: config.transport.env ? envUtils.stringify(config.transport.env) : undefined,
     }
   } else {

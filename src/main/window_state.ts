@@ -10,6 +10,7 @@ export interface IWindowState {
   x?: number
   y?: number
   mode?: WindowMode
+  normalBoundsVersion?: number
   readonly display?: number
 }
 
@@ -33,6 +34,7 @@ export function defaultWindowState(mode = WindowMode.Normal): IWindowState {
 }
 
 const storeKey = 'windowState'
+const currentNormalBoundsVersion = 1
 
 export function getState(): [IWindowState, boolean? /* has multiple displays */] {
   const state = getCache()
@@ -40,17 +42,10 @@ export function getState(): [IWindowState, boolean? /* has multiple displays */]
 }
 
 export function saveState(win: Electron.BrowserWindow): void {
-  let [x, y] = win.getPosition()
-  let [width, height] = win.getSize()
+  const { x, y, width, height } = win.getNormalBounds()
   let mode = WindowMode.Normal
   if (win.isFullScreen()) {
     mode = WindowMode.Fullscreen
-    // when we are in fullscreen, we want to persist the last non-fullscreen x/y position and width/height
-    const [originalState] = getState()
-    x = originalState.x ?? x
-    y = originalState.y ?? y
-    width = originalState.width ?? width
-    height = originalState.height ?? height
   } else if (win.isMaximized()) {
     mode = WindowMode.Maximized
   }
@@ -60,6 +55,7 @@ export function saveState(win: Electron.BrowserWindow): void {
     x,
     y,
     mode,
+    normalBoundsVersion: currentNormalBoundsVersion,
     // mode?: WindowMode;
     // readonly display?: number;
   })
@@ -73,12 +69,54 @@ function restoreWindowState(state?: IWindowState): [IWindowState, boolean? /* ha
       hasMultipleDisplays = displays.length > 1
 
       state = validateWindowState(state, displays)
-    } catch (err) {
-      // this.logService.warn(`Unexpected error validating window state: ${err}\n${err.stack}`); // somehow display API can be picky about the state to validate
+      if (state) {
+        state = repairLegacyMaximizedState(state)
+      }
+    } catch {
+      // The display API can be picky about the state it is asked to validate.
     }
   }
 
   return [state || defaultWindowState(), hasMultipleDisplays]
+}
+
+function repairLegacyMaximizedState(state: IWindowState): IWindowState {
+  if (
+    state.mode !== WindowMode.Maximized ||
+    typeof state.normalBoundsVersion === 'number' ||
+    typeof state.x !== 'number' ||
+    typeof state.y !== 'number' ||
+    typeof state.width !== 'number' ||
+    typeof state.height !== 'number'
+  ) {
+    return state
+  }
+
+  let display: Display
+  try {
+    display = screen.getDisplayMatching({ x: state.x, y: state.y, width: state.width, height: state.height })
+  } catch {
+    return state
+  }
+
+  const workArea = getWorkingArea(display)
+  // Older versions persisted the maximized bounds as the future normal bounds. Reset only those screen-sized
+  // maximized records so unmaximize has a visibly smaller rectangle to restore.
+  if (!workArea || state.width < workArea.width || state.height < workArea.height) {
+    return state
+  }
+
+  const defaults = defaultWindowState(WindowMode.Maximized)
+  const width = Math.min(defaults.width ?? minWidth, workArea.width)
+  const height = Math.min(defaults.height ?? minHeight, workArea.height)
+
+  return {
+    ...state,
+    x: Math.round(workArea.x + (workArea.width - width) / 2),
+    y: Math.round(workArea.y + (workArea.height - height) / 2),
+    width,
+    height,
+  }
 }
 
 function validateWindowState(state: IWindowState, displays: Display[]): IWindowState | undefined {
@@ -191,7 +229,7 @@ function validateWindowState(state: IWindowState, displays: Display[]): IWindowS
   try {
     display = screen.getDisplayMatching({ x: state.x, y: state.y, width: state.width, height: state.height })
     displayWorkingArea = getWorkingArea(display)
-  } catch (error) {
+  } catch {
     // Electron has weird conditions under which it throws errors
     // e.g. https://github.com/microsoft/vscode/issues/100334 when
     // large numbers are passed in

@@ -10,7 +10,6 @@ import type { ImageGenerationStorage } from '@/storage/ImageGenerationStorage'
 import type { SessionMetaStorage } from '@/storage/SessionMetaStorage'
 import { SQLiteImageGenerationStorage } from '@/storage/SQLiteImageGenerationStorage'
 import { SQLiteSessionMetaStorage } from '@/storage/SQLiteSessionMetaStorage'
-import { IndexedDBTaskSessionStorage, type TaskSessionStorage } from '@/storage/TaskSessionStorage'
 import { CHATBOX_BUILD_PLATFORM } from '@/variables'
 import { getBrowser, getOS } from '../packages/navigator'
 import type { Platform, PlatformType } from './interfaces'
@@ -19,7 +18,7 @@ import MobileExporter from './mobile_exporter'
 import mobileLogger from './mobile_logger'
 import type { SessionAttachmentRagController } from './session-attachment-rag/interface'
 import { MobileSQLiteStorage } from './storages'
-import { parseTextFileLocally } from './web_platform_utils'
+import { parseFileLocallyInBrowser } from './web_platform_utils'
 
 export default class MobilePlatform extends MobileSQLiteStorage implements Platform {
   public type: PlatformType = 'mobile'
@@ -28,7 +27,6 @@ export default class MobilePlatform extends MobileSQLiteStorage implements Platf
 
   private navigationCallback: ((path: string) => void) | null = null
   private _imageGenerationStorage: ImageGenerationStorage | null = null
-  private _taskSessionStorage: TaskSessionStorage | null = null
   private _sessionMetaStorage: SessionMetaStorage | null = null
 
   constructor() {
@@ -106,7 +104,48 @@ export default class MobilePlatform extends MobileSQLiteStorage implements Platf
     return () => null
   }
   public onWindowFocused(callback: () => void): () => void {
-    return () => null
+    let cancelled = false
+    let removeAppStateListener: (() => void) | undefined
+
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        callback()
+      }
+    }
+
+    App.addListener('appStateChange', ({ isActive }) => {
+      if (isActive && !cancelled) {
+        callback()
+      }
+    })
+      .then((handle) => {
+        if (cancelled) {
+          void handle.remove()
+          return
+        }
+        removeAppStateListener = () => {
+          void handle.remove()
+        }
+      })
+      .catch((error) => {
+        console.warn('Failed to listen appStateChange:', error)
+      })
+
+    document.addEventListener('visibilitychange', onVisibilityChange)
+
+    return () => {
+      cancelled = true
+      removeAppStateListener?.()
+      document.removeEventListener('visibilitychange', onVisibilityChange)
+    }
+  }
+  public async isWindowFocused(): Promise<boolean> {
+    try {
+      const state = await App.getState()
+      return state.isActive && document.visibilityState === 'visible'
+    } catch {
+      return document.visibilityState === 'visible'
+    }
   }
   public onUpdateDownloaded(callback: () => void): () => void {
     return () => null
@@ -243,10 +282,10 @@ export default class MobilePlatform extends MobileSQLiteStorage implements Platf
     return
   }
 
-  async parseFileLocally(file: File): Promise<{ key?: string; isSupported: boolean }> {
-    const result = await parseTextFileLocally(file)
+  async parseFileLocally(file: File): Promise<{ key?: string; isSupported: boolean; errorCode?: string }> {
+    const result = await parseFileLocallyInBrowser(file)
     if (!result.isSupported) {
-      return { isSupported: false }
+      return { isSupported: false, errorCode: result.errorCode }
     }
     const key = `parseFile-${uuidv4()}`
     await this.setStoreBlob(key, result.text)
@@ -286,13 +325,6 @@ export default class MobilePlatform extends MobileSQLiteStorage implements Platf
       this._imageGenerationStorage = new SQLiteImageGenerationStorage()
     }
     return this._imageGenerationStorage
-  }
-
-  public getTaskSessionStorage(): TaskSessionStorage {
-    if (!this._taskSessionStorage) {
-      this._taskSessionStorage = new IndexedDBTaskSessionStorage()
-    }
-    return this._taskSessionStorage
   }
 
   public getSessionMetaStorage(): SessionMetaStorage {

@@ -7,20 +7,24 @@ export const deepseekProvider = defineProvider({
   name: 'DeepSeek',
   type: ModelProviderType.OpenAI,
   modelsDevProviderId: 'deepseek',
-  curatedModelIds: ['deepseek-chat', 'deepseek-reasoner'],
+  curatedModelIds: ['deepseek-v4-flash', 'deepseek-v4-pro'],
   urls: {
     website: 'https://www.deepseek.com/',
   },
   defaultSettings: {
     models: [
       {
-        modelId: 'deepseek-chat',
-        contextWindow: 128_000,
-        capabilities: ['tool_use'],
+        modelId: 'deepseek-v4-flash',
+        nickname: 'DeepSeek V4 Flash',
+        contextWindow: 1_000_000,
+        maxOutput: 384_000,
+        capabilities: ['reasoning', 'tool_use'],
       },
       {
-        modelId: 'deepseek-reasoner',
-        contextWindow: 128_000,
+        modelId: 'deepseek-v4-pro',
+        nickname: 'DeepSeek V4 Pro',
+        contextWindow: 1_000_000,
+        maxOutput: 384_000,
         capabilities: ['reasoning', 'tool_use'],
       },
     ],

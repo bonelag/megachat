@@ -2,7 +2,7 @@ import { initJkAnalytics, trackJkViewEvent } from '@/analytics/jk'
 import { JK_EVENTS } from '@/analytics/jk-events'
 import { initSettingsStore } from '@/stores/settingsStore'
 
-;(async () => {
+export async function initJkTracking(): Promise<void> {
   try {
     const settings = await initSettingsStore()
     if (!settings.allowReportingAndTracking) {
@@ -14,4 +14,4 @@ import { initSettingsStore } from '@/stores/settingsStore'
   } catch (e) {
     console.error('Failed to initialize jk analytics:', e)
   }
-})()
+}

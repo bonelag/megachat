@@ -46,18 +46,6 @@
   </a>
 </p>
 
-<div align="center" markdown="1">
-  <strong>Sponsored by Warp</strong>
-  <br>
-  <br>
-  <a href="https://go.warp.dev/chatbox">
-    <img alt="Warp sponsorship" width="400" src="https://raw.githubusercontent.com/warpdotdev/brand-assets/refs/heads/main/Github/Sponsor/Warp-Github-LG-02.png">
-  </a>
-
-### [Warp, built for coding with multiple AI agents.](https://go.warp.dev/chatbox)
-[Available for MacOS, Linux, & Windows](https://go.warp.dev/chatbox)<br>
-</div>
-
 ---
 
 This is the repository for the Chatbox Community Edition, open-sourced under the GPLv3 license.

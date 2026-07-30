@@ -70,10 +70,9 @@ export default function SearchDialog(props: Props) {
     }
   }
   return (
-    // 通过显隐的方式控制组件，避免组件重复卸载挂载导致的状态丢失，主要是希望保持搜索结果的选中状态，这样用户体验会好很多
     <Dialog
-      style={{ display: open ? 'block' : 'none' }}
-      open={true}
+      keepMounted
+      open={open}
       onClose={() => setOpen(false)}
       fullWidth
       maxWidth={mode === 'search-result' ? 'md' : 'sm'}

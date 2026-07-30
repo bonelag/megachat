@@ -23,7 +23,9 @@ const SummaryMessage: FC<SummaryMessageProps> = ({ msg, className, isLatestSumma
   const { t } = useTranslation()
   const [expanded, setExpanded] = useState(false)
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
-  const { enableMarkdownRendering, enableLaTeXRendering, enableMermaidRendering } = useSettingsStore((state) => state)
+  const enableMarkdownRendering = useSettingsStore((state) => state.enableMarkdownRendering)
+  const enableLaTeXRendering = useSettingsStore((state) => state.enableLaTeXRendering)
+  const enableMermaidRendering = useSettingsStore((state) => state.enableMermaidRendering)
 
   const summaryText = getMessageText(msg)
 
@@ -65,6 +67,7 @@ const SummaryMessage: FC<SummaryMessageProps> = ({ msg, className, isLatestSumma
           {enableMarkdownRendering ? (
             <Markdown
               uniqueId={`summary-${msg.id}`}
+              sessionId={sessionId}
               enableLaTeXRendering={enableLaTeXRendering}
               enableMermaidRendering={enableMermaidRendering}
             >

@@ -109,6 +109,7 @@ build-web.sh
 
 # production
 /build
+/.toolchain
 
 # misc
 .DS_Store
@@ -179,7 +180,7 @@ electron-builder.env
 .env.sentry-build-plugin
 
 temp.md
-.sisyphus/
+/output/playwright/
 .playwright-cli/
 node-compile-cache/
 
@@ -189,4 +190,8 @@ storybook-static
 .worktrees/
 .claude/worktrees/
 
-tmp-*.md
+todo.md
+plan.md
+tmp-*.*
+tmp_*.*
+/docs/superpowers/plans

@@ -12,7 +12,6 @@ import type { Config, Language, Settings, ShortcutSetting } from '@shared/types'
 import { v4 as uuidv4 } from 'uuid'
 import { type ImageGenerationStorage, IndexedDBImageGenerationStorage } from '@/storage/ImageGenerationStorage'
 import { IndexedDBSessionMetaStorage, type SessionMetaStorage } from '@/storage/SessionMetaStorage'
-import { IndexedDBTaskSessionStorage, type TaskSessionStorage } from '@/storage/TaskSessionStorage'
 import type { Exporter, Platform, PlatformType, Storage } from './interfaces'
 import type { KnowledgeBaseController } from './knowledge-base/interface'
 import type { SessionAttachmentRagController } from './session-attachment-rag/interface'
@@ -97,6 +96,29 @@ class TestExporter implements Exporter {
     this.exports.set(filename, content)
   }
 
+  async exportStreamingFile(
+    filename: string,
+    dataCallback: () => AsyncGenerator<Uint8Array, void, unknown>,
+    _mimeType: string,
+    signal?: AbortSignal
+  ): Promise<{ boundedMemory: boolean }> {
+    const chunks: Uint8Array[] = []
+    let total = 0
+    for await (const chunk of dataCallback()) {
+      if (signal?.aborted) throw signal.reason ?? new DOMException('Operation canceled', 'AbortError')
+      chunks.push(chunk)
+      total += chunk.length
+    }
+    const output = new Uint8Array(total)
+    let offset = 0
+    for (const chunk of chunks) {
+      output.set(chunk, offset)
+      offset += chunk.length
+    }
+    this.exports.set(filename, output)
+    return { boundedMemory: true }
+  }
+
   getExport(filename: string): any {
     return this.exports.get(filename)
   }
@@ -120,7 +142,6 @@ export default class TestPlatform implements Platform {
   private storage = new InMemoryStorage()
   private _sessionMetaStorage: SessionMetaStorage | null = null
   private _imageGenerationStorage: ImageGenerationStorage | null = null
-  private _taskSessionStorage: TaskSessionStorage | null = null
   private blobs = new Map<string, string>()
   private configs: Config | null = null
   private settings: Settings | null = null
@@ -207,6 +228,10 @@ export default class TestPlatform implements Platform {
 
   public onWindowFocused(callback: () => void): () => void {
     return () => {}
+  }
+
+  public async isWindowFocused(): Promise<boolean> {
+    return true
   }
 
   public onUpdateDownloaded(callback: () => void): () => void {
@@ -332,13 +357,6 @@ export default class TestPlatform implements Platform {
     return this._imageGenerationStorage
   }
 
-  public getTaskSessionStorage(): TaskSessionStorage {
-    if (!this._taskSessionStorage) {
-      this._taskSessionStorage = new IndexedDBTaskSessionStorage()
-    }
-    return this._taskSessionStorage
-  }
-
   public getSessionMetaStorage(): SessionMetaStorage {
     if (!this._sessionMetaStorage) {
       this._sessionMetaStorage = new IndexedDBSessionMetaStorage()
@@ -413,7 +431,6 @@ export default class TestPlatform implements Platform {
     this.settings = null
     this._sessionMetaStorage = null
     this._imageGenerationStorage = null
-    this._taskSessionStorage = null
   }
 
   /**

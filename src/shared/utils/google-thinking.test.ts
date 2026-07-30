@@ -10,7 +10,15 @@ describe('google-thinking utils', () => {
   it('detects the correct thinking mode for Gemini model families', () => {
     expect(getGoogleThinkingMode('gemini-2.5-flash')).toBe('budget')
     expect(getGoogleThinkingMode('gemini-3-pro-preview')).toBe('level')
+    expect(getGoogleThinkingMode('gemini-3.5-flash')).toBe('level')
     expect(getGoogleThinkingMode('gemini-2.0-flash')).toBe('none')
+  })
+
+  it('treats image generation models as non-thinking', () => {
+    expect(getGoogleThinkingMode('gemini-2.5-flash-image')).toBe('none')
+    expect(getGoogleThinkingMode('gemini-2.5-flash-image-preview')).toBe('none')
+    expect(getGoogleThinkingMode('gemini-3-pro-image-preview')).toBe('none')
+    expect(getGoogleThinkingMode('gemini-3.1-flash-image-preview')).toBe('none')
   })
 
   it('returns the documented thinking levels for supported Gemini 3 models', () => {
@@ -19,6 +27,7 @@ describe('google-thinking utils', () => {
     expect(getSupportedGoogleThinkingLevels('gemini-3.1-pro-preview')).toEqual(['low', 'medium', 'high'])
     // Flash models: minimal/low/medium/high
     expect(getSupportedGoogleThinkingLevels('gemini-3-flash-preview')).toEqual(['minimal', 'low', 'medium', 'high'])
+    expect(getSupportedGoogleThinkingLevels('gemini-3.5-flash')).toEqual(['minimal', 'low', 'medium', 'high'])
     expect(getSupportedGoogleThinkingLevels('gemini-3.1-flash-lite-preview')).toEqual([
       'minimal',
       'low',
@@ -56,20 +65,25 @@ describe('google-thinking utils', () => {
     expect(config).not.toHaveProperty('thinkingBudget')
   })
 
-  it('strips stale thinkingLevel for unsupported Gemini 3 variants', () => {
-    const config = normalizeGoogleThinkingConfig('gemini-3.1-flash-image-preview', {
-      thinkingLevel: 'high',
-      includeThoughts: true,
-    })
-    expect(config).toEqual({ includeThoughts: true })
-    expect(config).not.toHaveProperty('thinkingLevel')
-  })
-
-  it('returns undefined for unsupported Gemini 3 variants with no includeThoughts', () => {
-    const config = normalizeGoogleThinkingConfig('gemini-3.1-flash-image-preview', {
-      thinkingLevel: 'high',
-    })
-    expect(config).toBeUndefined()
+  it('strips the whole config for Gemini image variants', () => {
+    expect(
+      normalizeGoogleThinkingConfig('gemini-3.1-flash-image-preview', {
+        thinkingLevel: 'high',
+        includeThoughts: true,
+      })
+    ).toBeUndefined()
+    expect(
+      normalizeGoogleThinkingConfig('gemini-2.5-flash-image', {
+        thinkingBudget: 24576,
+        includeThoughts: true,
+      })
+    ).toBeUndefined()
+    expect(
+      normalizeGoogleThinkingConfig('gemini-2.5-flash-image', {
+        thinkingBudget: 0,
+        includeThoughts: false,
+      })
+    ).toBeUndefined()
   })
 
   it('falls back to default level when saved level is invalid', () => {
@@ -97,11 +111,11 @@ describe('google-thinking utils', () => {
     expect(normalizeGoogleThinkingConfig('gemini-2.0-flash', undefined)).toBeUndefined()
   })
 
-  it('passes through config for non-thinking models', () => {
+  it('strips config for non-thinking models', () => {
     const config = normalizeGoogleThinkingConfig('gemini-2.0-flash', {
       thinkingBudget: 1024,
       includeThoughts: true,
     })
-    expect(config).toEqual({ thinkingBudget: 1024, includeThoughts: true })
+    expect(config).toBeUndefined()
   })
 })

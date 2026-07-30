@@ -1,8 +1,8 @@
-import type { MessageReasoningPart, MessageToolCallPart } from '@shared/types'
-import type { Meta, StoryObj } from '@storybook/react-vite'
-import React from 'react'
 import { Box, Stack, Text } from '@mantine/core'
-import { ToolCallPartUI, ReasoningContentUI } from '../message-parts/ToolCallPartUI'
+import { SANDBOX_EXEC_ERROR_CODES } from '@shared/sandbox-provider'
+import type { Message, MessageToolCallPart } from '@shared/types'
+import type { Meta, StoryObj } from '@storybook/react-vite'
+import { type StepTimelinePart, StepTimelineUI, ToolCallPartUI } from '../message-parts/ToolCallPartUI'
 
 // ─── ToolCallPartUI Stories ─────────────────────────────────────────
 
@@ -132,6 +132,23 @@ export const TerminalSuccess: StoryObj<typeof ToolCallPartUI> = {
   },
 }
 
+export const BashNotAvailable: StoryObj<typeof ToolCallPartUI> = {
+  name: 'Code Execution — Bash Not Available',
+  args: {
+    part: makeToolCallPart({
+      toolName: 'code_execution',
+      state: 'result',
+      args: { language: 'bash', code: 'echo hello' },
+      result: {
+        stdout: '',
+        stderr: 'bash is not available on this Windows host. Install Git Bash or enable WSL, or use node.',
+        exitCode: 127,
+        errorCode: SANDBOX_EXEC_ERROR_CODES.BASH_NOT_AVAILABLE,
+      },
+    }),
+  },
+}
+
 export const ReadFileSuccess: StoryObj<typeof ToolCallPartUI> = {
   name: 'Read File — Success',
   args: {
@@ -144,6 +161,21 @@ export const ReadFileSuccess: StoryObj<typeof ToolCallPartUI> = {
   },
 }
 
+export const ReadFileBashNotAvailable: StoryObj<typeof ToolCallPartUI> = {
+  name: 'Read File — Bash Not Available',
+  args: {
+    part: makeToolCallPart({
+      toolName: 'read_file',
+      state: 'result',
+      args: { file_path: 'report.txt' },
+      result: {
+        error: 'bash is not available on this Windows host.',
+        errorCode: SANDBOX_EXEC_ERROR_CODES.BASH_NOT_AVAILABLE,
+      },
+    }),
+  },
+}
+
 export const ParseLinkLoading: StoryObj<typeof ToolCallPartUI> = {
   name: 'Parse Link — Loading',
   args: {
@@ -152,6 +184,109 @@ export const ParseLinkLoading: StoryObj<typeof ToolCallPartUI> = {
       state: 'call',
       args: { url: 'https://example.com/article' },
     }),
+  },
+}
+
+// ─── Step Timeline (reasoning + tool calls on one connected line) ───
+
+function makeMessage(parts: StepTimelinePart[], overrides: Partial<Message> = {}): Message {
+  return {
+    id: 'msg_demo',
+    role: 'assistant',
+    contentParts: parts,
+    isStreamingMode: true,
+    generating: false,
+    ...overrides,
+  } as Message
+}
+
+export const StepTimelineReasoningAndTools: StoryObj = {
+  name: 'Step Timeline — Reasoning + Tools',
+  parameters: {
+    docs: {
+      description: {
+        story:
+          'Consecutive thinking and tool-call steps thread together on a single connected timeline. ' +
+          'Each step shows how long it took (durations under 2s are hidden).',
+      },
+    },
+  },
+  render: () => {
+    const parts: StepTimelinePart[] = [
+      {
+        type: 'reasoning',
+        text: 'Let me break the task down and decide which files to inspect first.',
+        duration: 4200,
+      },
+      makeToolCallPart({
+        toolName: 'web_search',
+        state: 'result',
+        args: { query: 'token refresh best practices' },
+        duration: 3300,
+        result: {
+          query: 'token refresh best practices',
+          searchResults: [
+            {
+              title: 'OAuth token refresh patterns',
+              snippet: 'How to rotate refresh tokens…',
+              link: 'https://example.com/oauth',
+            },
+            {
+              title: 'Silent refresh in SPAs',
+              snippet: 'Refreshing access tokens without a redirect…',
+              link: 'https://example.com/spa',
+            },
+          ],
+        },
+      }),
+      makeToolCallPart({ toolName: 'file_search', state: 'result', args: { query: 'auth flow' }, duration: 1200 }),
+      makeToolCallPart({ toolName: 'read_file', state: 'result', args: { path: 'src/auth.ts' }, duration: 2600 }),
+      { type: 'reasoning', text: 'The token refresh looks wrong — verifying with a quick command.', duration: 3100 },
+      makeToolCallPart({ toolName: 'terminal', state: 'result', args: { command: 'npm test auth' }, duration: 8400 }),
+    ]
+    return <StepTimelineUI parts={parts} message={makeMessage(parts)} onCopyReasoningContent={() => () => {}} />
+  },
+}
+
+export const StepTimelineWithInterleavedText: StoryObj = {
+  name: 'Step Timeline — Interleaved Text',
+  parameters: {
+    docs: {
+      description: {
+        story:
+          'Intermediate narration the assistant emits between steps is threaded into the same timeline ' +
+          '(so the whole run stays connected and collapses together); only the final answer stays outside.',
+      },
+    },
+  },
+  render: () => {
+    const parts: StepTimelinePart[] = [
+      { type: 'reasoning', text: 'First I need to find where auth is handled.', duration: 3200 },
+      { type: 'text', text: 'Let me search the codebase for the auth flow.' },
+      makeToolCallPart({ toolName: 'file_search', state: 'result', args: { query: 'auth' }, duration: 2400 }),
+      { type: 'text', text: "Found it in `src/auth.ts`. I'll read it to confirm the token logic." },
+      makeToolCallPart({ toolName: 'read_file', state: 'result', args: { path: 'src/auth.ts' }, duration: 2100 }),
+    ]
+    return (
+      <StepTimelineUI
+        parts={parts}
+        message={makeMessage(parts)}
+        onCopyReasoningContent={() => () => {}}
+        renderText={(part) => <Text size="sm">{part.text}</Text>}
+      />
+    )
+  },
+}
+
+export const StepTimelineRunning: StoryObj = {
+  name: 'Step Timeline — Running',
+  render: () => {
+    const parts: StepTimelinePart[] = [
+      { type: 'reasoning', text: 'Planning the change…', duration: 3500 },
+      makeToolCallPart({ toolName: 'edit_file', state: 'result', args: { path: 'src/index.ts' }, duration: 2100 }),
+      makeToolCallPart({ toolName: 'terminal', state: 'call', args: { command: 'pnpm build' }, startTime: Date.now() }),
+    ]
+    return <StepTimelineUI parts={parts} message={makeMessage(parts, { generating: true })} />
   },
 }
 

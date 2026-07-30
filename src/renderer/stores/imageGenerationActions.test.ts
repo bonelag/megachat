@@ -20,6 +20,7 @@ vi.mock('@/adapters', () => ({
 }))
 
 vi.mock('@/packages/remote', () => ({
+  IMAGE_GENERATION_POLL_INTERVAL_MS: 2000,
   submitImageGeneration: submitImageGenerationMock,
   pollTaskUntilComplete: pollTaskUntilCompleteMock,
   pollImageTask: vi.fn(),
@@ -85,7 +86,7 @@ describe('imageGenerationActions reference image payload', () => {
   beforeEach(() => {
     vi.clearAllMocks()
 
-    createRecordMock.mockResolvedValue({ id: 'record-1' })
+    createRecordMock.mockResolvedValue({ id: 'record-1', createdAt: 1_000 })
     updateRecordMock.mockImplementation(async (id: string, patch: Record<string, unknown>) => ({ id, ...patch }))
     submitImageGenerationMock.mockResolvedValue({
       task_id: 'task-1',
@@ -96,6 +97,7 @@ describe('imageGenerationActions reference image payload', () => {
         {
           status: 'completed',
           image_url: 'https://example.com/output.png',
+          thumbnail_url: 'https://example.com/output.png?thumbnail=512x512',
         },
       ],
     })
@@ -128,6 +130,60 @@ describe('imageGenerationActions reference image payload', () => {
     expect(trackEventMock).toHaveBeenCalledWith('generate_image', expect.objectContaining({ has_reference: true }))
   })
 
+  it('exposes a completion promise for background task consumers', async () => {
+    const { startImageGeneration } = await import('./imageGenerationActions')
+
+    const handle = await startImageGeneration({
+      prompt: 'make an image',
+      referenceImages: [],
+      model: {
+        provider: 'chatbox-ai',
+        modelId: 'gpt-image-1',
+      },
+      imageGenerateNum: 1,
+    })
+
+    expect(handle).toMatchObject({
+      recordId: 'record-1',
+      startedAt: 1_000,
+      monitoring: { mode: 'polling', intervalMs: 2_000 },
+    })
+
+    await expect(handle.completion).resolves.toMatchObject({
+      id: 'record-1',
+      status: 'done',
+      generatedImages: ['https://example.com/output.png'],
+    })
+  })
+
+  it('persists caller retry metadata before starting the provider request', async () => {
+    let releasePersistence: (() => void) | undefined
+    const persistenceGate = new Promise<void>((resolve) => {
+      releasePersistence = resolve
+    })
+    const onRecordCreated = vi.fn(async () => persistenceGate)
+    const { startImageGeneration } = await import('./imageGenerationActions')
+
+    const handlePromise = startImageGeneration(
+      {
+        prompt: 'make an image',
+        referenceImages: [],
+        model: {
+          provider: 'chatbox-ai',
+          modelId: 'gpt-image-1',
+        },
+      },
+      { onRecordCreated }
+    )
+
+    await vi.waitFor(() => expect(onRecordCreated).toHaveBeenCalledOnce())
+    expect(submitImageGenerationMock).not.toHaveBeenCalled()
+
+    releasePersistence?.()
+    await handlePromise
+    await vi.waitFor(() => expect(submitImageGenerationMock).toHaveBeenCalledOnce())
+  })
+
   it('stores structured error codes from Chatbox AI image generation failures', async () => {
     const { BaseError } = await import('@shared/models/errors')
     class StructuredImageGenerationError extends BaseError {
@@ -154,6 +210,31 @@ describe('imageGenerationActions reference image payload', () => {
           status: 'error',
           error: 'license not found',
           errorCode: 20004,
+        })
+      )
+    })
+  })
+
+  it('stores thumbnail URLs separately from original image URLs', async () => {
+    const { createAndGenerate } = await import('./imageGenerationActions')
+
+    await createAndGenerate({
+      prompt: 'make an image',
+      referenceImages: [],
+      model: {
+        provider: 'chatbox-ai',
+        modelId: 'gpt-image-1',
+      },
+      imageGenerateNum: 1,
+    })
+
+    await vi.waitFor(() => {
+      expect(updateRecordMock).toHaveBeenCalledWith(
+        'record-1',
+        expect.objectContaining({
+          generatedImages: ['https://example.com/output.png'],
+          generatedImageThumbnails: ['https://example.com/output.png?thumbnail=512x512'],
+          status: 'done',
         })
       )
     })

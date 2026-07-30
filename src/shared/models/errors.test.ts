@@ -105,6 +105,22 @@ describe('ChatboxAIAPIError', () => {
     expect(error?.requestId).toBe('req-123')
   })
 
+  it('maps quota codenames to distinct client error codes', () => {
+    const freeError = ChatboxAIAPIError.fromCodeName('daily quota exhausted', 'free_token_quota_exhausted')
+    const error = ChatboxAIAPIError.fromCodeName(
+      'reward quota available',
+      'free_agent_mode_token_quota_exhausted',
+      'req-agent-reward'
+    )
+
+    expect(freeError?.code).toBe(20039)
+    expect(freeError?.detail.name).toBe('free_token_quota_exhausted')
+    expect(error).toBeInstanceOf(ChatboxAIAPIError)
+    expect(error?.code).toBe(20040)
+    expect(error?.detail.name).toBe('free_agent_mode_token_quota_exhausted')
+    expect(error?.requestId).toBe('req-agent-reward')
+  })
+
   it('fromCodeName returns null for unknown codename', () => {
     const error = ChatboxAIAPIError.fromCodeName('failed', 'not_a_real_codename')
 
@@ -117,12 +133,16 @@ describe('ChatboxAIAPIError', () => {
     expect(error).toBeNull()
   })
 
-  it('getDetail returns detail for known code', () => {
-    const detail = ChatboxAIAPIError.getDetail(10004)
+  it.each([
+    [10004, 'token_quota_exhausted'],
+    [20039, 'free_token_quota_exhausted'],
+    [20040, 'free_agent_mode_token_quota_exhausted'],
+  ] as const)('getDetail maps client error code %s to %s', (code, name) => {
+    const detail = ChatboxAIAPIError.getDetail(code)
 
     expect(detail).not.toBeNull()
-    expect(detail?.name).toBe('token_quota_exhausted')
-    expect(detail?.code).toBe(10004)
+    expect(detail?.name).toBe(name)
+    expect(detail?.code).toBe(code)
     expect(typeof detail?.i18nKey).toBe('string')
   })
 

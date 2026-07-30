@@ -1,6 +1,7 @@
 import { sanitizeUrl } from '@braintree/sanitize-url'
 import { useTheme } from '@mui/material'
 import {
+  type ComponentProps,
   type CSSProperties,
   createContext,
   type ElementType,
@@ -58,16 +59,17 @@ import {
 import clsx from 'clsx'
 import { visit } from 'unist-util-visit'
 import { useCopied } from '@/hooks/useCopied'
-import { deployHtmlToEdgeOne } from '../packages/edgeone'
 import { highlight, highlightSync, type ShikiTheme } from '../packages/shiki'
-import * as toastActions from '../stores/toastActions'
 import { ScalableIcon } from './common/ScalableIcon'
+import { ImageViewer, ImageViewerItem } from './ImageViewer'
 import IconDart from './icons/Dart'
 import IconJava from './icons/Java'
 import { MessageMermaid, SVGPreview } from './Mermaid'
+import { type StreamingTextSegment, useStreamingTextSegments, wrapStreamingSegmentsInHast } from './streaming-text-fade'
 import './shiki-code.css'
 
 const CODE_BLOCK_COLLAPSE_LINE_THRESHOLD = 7
+type RehypePlugins = NonNullable<ComponentProps<typeof ReactMarkdown>['rehypePlugins']>
 
 function remarkAddCodeIndex() {
   // biome-ignore lint/suspicious/noExplicitAny: remark AST nodes lack a friendly type here
@@ -81,9 +83,16 @@ function remarkAddCodeIndex() {
   }
 }
 
+function rehypeWrapStreamingSegments(options: StreamingTextSegment[]) {
+  return (tree: import('hast').Root) => {
+    wrapStreamingSegmentsInHast(tree, options)
+  }
+}
+
 function Markdown(props: {
   children: string
   uniqueId?: string
+  sessionId?: string
   enableLaTeXRendering?: boolean
   enableMermaidRendering?: boolean
   hiddenCodeCopyButton?: boolean
@@ -96,6 +105,7 @@ function Markdown(props: {
   const {
     children,
     uniqueId,
+    sessionId,
     enableLaTeXRendering = true,
     enableMermaidRendering = true,
     hiddenCodeCopyButton,
@@ -108,72 +118,141 @@ function Markdown(props: {
 
   const codeFences = useMemo(() => (children.match(/```/g) || []).length, [children])
   const generatingCodeIndex = useMemo(() => (codeFences % 2 === 0 ? -1 : Math.floor(codeFences / 2)), [codeFences])
+  const processedChildren = useMemo(
+    () => (enableLaTeXRendering ? latex.processLaTeX(children) : children),
+    [children, enableLaTeXRendering]
+  )
+  const streamingSegments = useStreamingTextSegments(processedChildren, generating, uniqueId)
+  const rehypePlugins = useMemo<RehypePlugins>(
+    () =>
+      streamingSegments.length > 0 ? [rehypeKatex, [rehypeWrapStreamingSegments, streamingSegments]] : [rehypeKatex],
+    [streamingSegments]
+  )
 
   return (
-    <ReactMarkdown
-      remarkPlugins={
-        enableLaTeXRendering
-          ? [remarkGfm, remarkMath, remarkBreaks, remarkAddCodeIndex]
-          : [remarkGfm, remarkBreaks, remarkAddCodeIndex]
-      }
-      rehypePlugins={[rehypeKatex]}
-      className={`break-words [overflow-wrap:anywhere] ${className || ''}`}
-      // react-markdown's default defaultUrlTransform will incorrectly encode query parameters in URLs (e.g. & becomes &amp;)
-      // Use sanitizeUrl here to avoid that and to prevent XSS attacks
-      urlTransform={(url) => sanitizeUrl(url)}
-      components={useMemo(
-        () => ({
-          // biome-ignore lint/suspicious/noExplicitAny: react-markdown code component props are loosely typed
-          code: (props: any) => {
-            const codeIndex = typeof props['data-code-index'] === 'number' ? props['data-code-index'] : -1
-            return (
-              <CodeRenderer
+    <ImageViewer>
+      <ReactMarkdown
+        className={`break-words [overflow-wrap:anywhere] ${className || ''}`}
+        remarkPlugins={
+          enableLaTeXRendering
+            ? [remarkGfm, remarkMath, remarkBreaks, remarkAddCodeIndex]
+            : [remarkGfm, remarkBreaks, remarkAddCodeIndex]
+        }
+        rehypePlugins={rehypePlugins}
+        // react-markdown's default defaultUrlTransform will incorrectly encode query parameters in URLs (e.g. & becomes &amp;)
+        // Use sanitizeUrl here to avoid that and to prevent XSS attacks
+        urlTransform={(url) => sanitizeUrl(url)}
+        components={useMemo(
+          () => ({
+            // biome-ignore lint/suspicious/noExplicitAny: react-markdown code component props are loosely typed
+            code: (props: any) => {
+              const codeIndex = typeof props['data-code-index'] === 'number' ? props['data-code-index'] : -1
+              return (
+                <CodeRenderer
+                  {...props}
+                  uniqueId={uniqueId ? `${uniqueId}-code-${codeIndex}` : undefined}
+                  sessionId={sessionId}
+                  hiddenCodeCopyButton={hiddenCodeCopyButton}
+                  enableMermaidRendering={enableMermaidRendering}
+                  generating={generating && generatingCodeIndex === codeIndex}
+                  forceColorScheme={forceColorScheme}
+                  onCodeCopy={onCodeCopy}
+                  onPreviewWebpage={onPreviewWebpage}
+                />
+              )
+            },
+            a: ({ node, ...props }) => (
+              <a
                 {...props}
-                uniqueId={uniqueId ? `${uniqueId}-code-${codeIndex}` : undefined}
-                hiddenCodeCopyButton={hiddenCodeCopyButton}
-                enableMermaidRendering={enableMermaidRendering}
-                generating={generating && generatingCodeIndex === codeIndex}
-                forceColorScheme={forceColorScheme}
-                onCodeCopy={onCodeCopy}
-                onPreviewWebpage={onPreviewWebpage}
+                target="_blank"
+                rel="noreferrer"
+                onClick={(e) => {
+                  e.stopPropagation()
+                }}
               />
-            )
-          },
-          a: ({ node, ...props }) => (
-            <a
-              {...props}
-              target="_blank"
-              rel="noreferrer"
-              onClick={(e) => {
-                e.stopPropagation()
-              }}
-            />
-          ),
-        }),
-        [
-          uniqueId,
-          hiddenCodeCopyButton,
-          enableMermaidRendering,
-          generating,
-          generatingCodeIndex,
-          forceColorScheme,
-          onCodeCopy,
-          onPreviewWebpage,
-        ]
-      )}
-    >
-      {enableLaTeXRendering ? latex.processLaTeX(children) : children}
-    </ReactMarkdown>
+            ),
+            img: ({ node, ...props }) => <MarkdownImage {...props} />,
+          }),
+          [
+            uniqueId,
+            sessionId,
+            hiddenCodeCopyButton,
+            enableMermaidRendering,
+            generating,
+            generatingCodeIndex,
+            forceColorScheme,
+            onCodeCopy,
+            onPreviewWebpage,
+          ]
+        )}
+      >
+        {processedChildren}
+      </ReactMarkdown>
+    </ImageViewer>
   )
 }
 
 export default memo(Markdown)
+
+function parseImageDimension(value: number | string | undefined): number | undefined {
+  if (typeof value === 'number') return value > 0 ? value : undefined
+  if (typeof value !== 'string') return undefined
+  const parsed = Number.parseInt(value, 10)
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined
+}
+
+function MarkdownImage({ src, alt, width, height, className, onLoad, onClick, ...props }: ComponentProps<'img'>) {
+  const [naturalSize, setNaturalSize] = useState<{ width: number; height: number }>()
+
+  if (!src) return <img {...props} alt={alt} width={width} height={height} className={className} />
+
+  const viewerWidth = naturalSize?.width ?? parseImageDimension(width) ?? 1024
+  const viewerHeight = naturalSize?.height ?? parseImageDimension(height) ?? 1024
+
+  return (
+    <ImageViewerItem
+      original={src}
+      thumbnail={src}
+      width={viewerWidth}
+      height={viewerHeight}
+      alt={alt}
+      caption={props.title}
+    >
+      {({ ref, open }) => (
+        <img
+          {...props}
+          ref={ref}
+          src={src}
+          alt={alt}
+          width={width}
+          height={height}
+          className={clsx(className, 'cursor-zoom-in')}
+          onLoad={(event) => {
+            onLoad?.(event)
+            const image = event.currentTarget
+            if (image.naturalWidth > 0 && image.naturalHeight > 0) {
+              setNaturalSize({ width: image.naturalWidth, height: image.naturalHeight })
+            }
+          }}
+          onClick={(event) => {
+            onClick?.(event)
+            if (event.defaultPrevented) return
+            event.preventDefault()
+            event.stopPropagation()
+            open(event)
+          }}
+        />
+      )}
+    </ImageViewerItem>
+  )
+}
 
 export const CodeRenderer = memo(
   (props: {
     children: string
     className?: string
     uniqueId?: string
+    sessionId?: string
     hiddenCodeCopyButton?: boolean
     generating?: boolean
     enableMermaidRendering?: boolean
@@ -204,6 +283,7 @@ export const CodeRenderer = memo(
       <>
         <BlockCode
           uniqueId={props.uniqueId}
+          sessionId={props.sessionId}
           hiddenCodeCopyButton={hiddenCodeCopyButton}
           language={language}
           generating={generating}
@@ -330,6 +410,7 @@ type BlockCodeProps = {
   language: string
   children: string
   uniqueId?: string
+  sessionId?: string
   hiddenCodeCopyButton?: boolean
   generating?: boolean
   forceColorScheme?: 'light' | 'dark'
@@ -427,6 +508,7 @@ const BlockCode = memo(
   ({
     children,
     uniqueId,
+    sessionId,
     hiddenCodeCopyButton,
     language,
     generating,
@@ -440,7 +522,6 @@ const BlockCode = memo(
     const shikiTheme: ShikiTheme = colorScheme !== 'light' ? 'one-dark-pro' : 'one-light'
     const languageName = useMemo(() => language.toUpperCase(), [language])
     const isRenderableCode = useMemo(() => isRenderableCodeLanguage(language), [language])
-    const [deploying, setDeploying] = useState(false)
     const canDeploy = useMemo(
       () => isRenderableCode && String(children).trim().length > 0,
       [children, isRenderableCode]
@@ -464,13 +545,15 @@ const BlockCode = memo(
         event.preventDefault()
         NiceModal.show('artifact-preview', {
           htmlCode: String(children),
+          uniqueId,
+          sessionId,
         }).catch(() => null)
       },
-      [children]
+      [children, uniqueId, sessionId]
     )
 
     const onClickDeploy = useCallback(
-      async (event: React.MouseEvent) => {
+      (event: React.MouseEvent) => {
         event.stopPropagation()
         event.preventDefault()
         if (!canDeploy) {
@@ -478,17 +561,9 @@ const BlockCode = memo(
         }
         // 应投放侧要求改触发点为分享按钮。但注意现在语义上是 mismatch 的
         onPreviewWebpage?.()
-        setDeploying(true)
-        try {
-          const url = await deployHtmlToEdgeOne(String(children))
-          await NiceModal.show('edgeone-deploy-success', { url })
-        } catch (error) {
-          toastActions.add((error as Error)?.message || t('Publish failed'))
-        } finally {
-          setDeploying(false)
-        }
+        NiceModal.show('vibedrop-publish', { html: String(children), uniqueId, sessionId }).catch(() => null)
       },
-      [canDeploy, children, t, onPreviewWebpage]
+      [canDeploy, children, uniqueId, sessionId, onPreviewWebpage]
     )
 
     const needCollapse = useMemo(
@@ -546,14 +621,8 @@ const BlockCode = memo(
 
             {canDeploy && (
               <Tooltip label={t('Publish Webpage')} withArrow openDelay={1000}>
-                <ActionIcon
-                  variant="transparent"
-                  color="chatbox-tertiary"
-                  size={20}
-                  onClick={onClickDeploy}
-                  disabled={deploying}
-                >
-                  {deploying ? <Loader size={12} /> : <IconWorldUpload />}
+                <ActionIcon variant="transparent" color="chatbox-tertiary" size={20} onClick={onClickDeploy}>
+                  <IconWorldUpload />
                 </ActionIcon>
               </Tooltip>
             )}

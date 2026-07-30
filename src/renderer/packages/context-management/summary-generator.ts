@@ -1,5 +1,4 @@
-import * as Sentry from '@sentry/react'
-import { ApiError, NetworkError } from '@shared/models/errors'
+import { isExpectedGenerationError } from '@shared/models/error-classification'
 import type { Language, Message, ModelProvider, SessionSettings, Settings } from '@shared/types'
 import { createModel } from '@/adapters'
 import { languageNameMap } from '@/i18n/locales'
@@ -8,6 +7,7 @@ import { convertToModelMessages } from '@/packages/model-calls/message-utils'
 import * as promptFormat from '@/packages/prompts'
 import * as settingActions from '@/stores/settingActions'
 import { settingsStore } from '@/stores/settingsStore'
+import { reportError } from '@/utils/sentry'
 
 export interface SummaryGeneratorOptions {
   messages: Message[]
@@ -50,8 +50,11 @@ export async function generateSummary(options: SummaryGeneratorOptions): Promise
 
     return { success: true, summary: cleanedSummary }
   } catch (e: unknown) {
-    if (!(e instanceof ApiError || e instanceof NetworkError)) {
-      Sentry.captureException(e)
+    if (!isExpectedGenerationError(e)) {
+      reportError(e, {
+        domain: 'ai-generation',
+        operation: 'generate_summary',
+      })
     }
 
     return {
@@ -161,8 +164,11 @@ export async function generateSummaryWithStream(options: StreamingSummaryOptions
 
     return { success: true, summary: cleanedSummary }
   } catch (e: unknown) {
-    if (!(e instanceof ApiError || e instanceof NetworkError)) {
-      Sentry.captureException(e)
+    if (!isExpectedGenerationError(e)) {
+      reportError(e, {
+        domain: 'ai-generation',
+        operation: 'generate_summary_stream',
+      })
     }
 
     return {

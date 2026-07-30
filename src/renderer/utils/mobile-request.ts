@@ -17,6 +17,29 @@ function toHeaderObject(headers: Headers | Record<string, string>): Record<strin
  * Native HTTP path for mobile. Uses CapacitorHttp / StreamHttp so forbidden browser
  * headers (notably User-Agent) can actually be sent.
  */
+function isLockedStreamCancelError(error: unknown): boolean {
+  return (
+    error instanceof TypeError &&
+    (error.message.includes('Cannot cancel a locked stream') ||
+      error.message.includes('ReadableStream is locked') ||
+      error.message.includes('stream is locked'))
+  )
+}
+
+export function cancelReadableStreamOnAbort(stream: ReadableStream<Uint8Array>) {
+  try {
+    void stream.cancel('aborted').catch((error: unknown) => {
+      if (!isLockedStreamCancelError(error)) {
+        console.warn('Failed to cancel native stream', error)
+      }
+    })
+  } catch (error) {
+    if (!isLockedStreamCancelError(error)) {
+      console.warn('Failed to cancel native stream', error)
+    }
+  }
+}
+
 export async function handleMobileRequest(
   url: string,
   method: string,
@@ -53,9 +76,7 @@ export async function handleMobileRequest(
       // Handle abort signal for stream cancellation
       if (signal) {
         const onAbort = () => {
-          try {
-            void stream.cancel('aborted')
-          } catch {}
+          cancelReadableStreamOnAbort(stream)
         }
         if (signal.aborted) onAbort()
         else signal.addEventListener('abort', onAbort, { once: true })
@@ -86,7 +107,7 @@ export async function handleMobileRequest(
   const rawData = typeof response.data === 'string' ? response.data : JSON.stringify(response.data)
   // Treat status 0 or < 200 as errors, in addition to >= 400
   if (response.status === 0 || response.status < 200 || response.status >= 400) {
-    throw new ApiError(`Status Code ${response.status}`, rawData)
+    throw new ApiError(`Status Code ${response.status}`, rawData, response.status)
   }
   const responseData = rawData
 

@@ -5,9 +5,15 @@
   -webkit-user-select: text;
   user-select: text;
 
-  .msg-content h1 { font-size: 1.3em; }
-  .msg-content h2 { font-size: 1.2em; }
-  .msg-content h3 { font-size: 1.1em; }
+  .msg-content h1 {
+    font-size: 1.3em;
+  }
+  .msg-content h2 {
+    font-size: 1.2em;
+  }
+  .msg-content h3 {
+    font-size: 1.1em;
+  }
   .msg-content p {
     margin: 0.5rem 0 0.5rem 0;
   }
@@ -125,6 +131,31 @@ html[data-theme="dark"] {
   display: inline-block;
   box-sizing: border-box;
   animation: loadingrotation 0.4s linear infinite;
+}
+
+.chatbox-streaming-text-fade,
+[data-streaming-fade-key] {
+  display: inline;
+  position: relative;
+  animation: chatbox-streaming-text-fade 300ms ease-out both;
+}
+
+@keyframes chatbox-streaming-text-fade {
+  from {
+    opacity: 0;
+    top: 2px;
+  }
+  to {
+    opacity: 1;
+    top: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chatbox-streaming-text-fade,
+  [data-streaming-fade-key] {
+    animation: none;
+  }
 }
 
 @keyframes loadingrotation {

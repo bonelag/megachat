@@ -7,6 +7,7 @@ import { createFetchWithProxy } from '../../../models/utils/fetch-proxy'
 import type { ProviderModelInfo } from '../../../types'
 import type { ModelDependencies } from '../../../types/adapters'
 import { normalizeOpenAIResponsesHostAndPath } from '../../../utils/llm_utils'
+import { normalizeOpenAIReasoningOptions } from '../../../utils/reasoning-control'
 
 interface Options {
   apiKey: string
@@ -36,12 +37,22 @@ export default class CustomOpenAIResponses extends AbstractAISDKModel {
     this.options = { ...options, apiHost, apiPath }
   }
 
-  protected getCallSettings() {
+  protected getCallSettings(options: CallChatCompletionOptions) {
     return {
       temperature: this.options.temperature,
       topP: this.options.topP,
       maxOutputTokens: this.options.maxOutputTokens,
       stream: this.options.stream,
+      // Chatbox always sends the full context itself and never relies on the Responses API's
+      // server-side state (previous_response_id / item_reference), which additionally cannot be
+      // resolved across relay/gateway providers. Force store=false so the SDK inlines the full
+      // history and avoids tool-call / item id mismatches (see issue #3728).
+      providerOptions: {
+        openai: {
+          ...normalizeOpenAIReasoningOptions(this.options.model.modelId, options.providerOptions?.openai),
+          store: false,
+        },
+      },
     }
   }
 

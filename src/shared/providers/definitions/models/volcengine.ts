@@ -1,6 +1,7 @@
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible'
 import AbstractAISDKModel from '../../../models/abstract-ai-sdk'
 import type { ProviderModelInfo, ToolUseScope } from '../../../types'
+import { isDeepSeekWeakToolUse } from '../../../models/utils/deepseek'
 import type { ModelDependencies } from '../../../types/adapters'
 
 type FetchFunction = typeof globalThis.fetch
@@ -55,9 +56,7 @@ export default class VolcEngine extends AbstractAISDKModel {
   }
 
   isSupportToolUse(scope?: ToolUseScope) {
-    if (scope === 'web-browsing' && /deepseek-(v3|r1)$/.test(this.options.model.modelId.toLowerCase())) {
-      return false
-    }
+    if (isDeepSeekWeakToolUse(this.options.model.modelId, scope)) return false
     return super.isSupportToolUse()
   }
 }

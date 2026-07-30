@@ -1,4 +1,6 @@
-import { isSessionAttachmentRagSupportedFilePath, isTextFilePath } from '@shared/file-extensions'
+import { isSessionAttachmentRagSupportedFilePath, isSupportedFile, isTextFilePath } from '@shared/file-extensions'
+import { NON_RECOVERABLE_LOCAL_PARSER_ERROR_CODES } from '@shared/file-parse-errors'
+import { searchSessionMessages } from '@shared/services/native-session-search'
 import type {
   ExportChatFormat,
   ExportChatScope,
@@ -29,28 +31,28 @@ import * as defaults from '../../shared/defaults'
 import { SESSION_ATTACHMENT_RAG_LOG_PREFIX } from '../../shared/session-attachment-rag/logging'
 import { createMessage, type Message, SessionSettingsSchema, TOKEN_CACHE_KEYS } from '../../shared/types'
 import type { AttachmentPreparationResult, PreprocessedFile } from '../types/input-box'
+import { resolveChatboxLicenseDefaultModel } from './defaultChatModel'
 import { lastUsedModelStore } from './lastUsedModelStore'
+import {
+  SESSION_ATTACHMENT_RAG_LARGE_ATTACHMENT_WARNING,
+  SESSION_ATTACHMENT_RAG_PARSED_CONTENT_TOO_LARGE_ERROR,
+} from './sessionAttachmentRagErrors'
 import * as settingActions from './settingActions'
 import { getPlatformDefaultDocumentParser, settingsStore } from './settingsStore'
+
+export {
+  isSessionAttachmentRagAuthError,
+  isSessionAttachmentRagIndexingError,
+  SESSION_ATTACHMENT_RAG_LARGE_ATTACHMENT_WARNING,
+  SESSION_ATTACHMENT_RAG_PARSED_CONTENT_TOO_LARGE_ERROR,
+  SESSION_ATTACHMENT_RAG_REQUIRES_CHATBOX_AI_ERROR,
+  SESSION_ATTACHMENT_RAG_REQUIRES_KNOWLEDGE_BASE_ERROR,
+  SESSION_ATTACHMENT_RAG_REQUIRES_TOOL_USE_MODEL_ERROR,
+} from './sessionAttachmentRagErrors'
 
 const log = getLogger('session-helpers')
 const SESSION_ATTACHMENT_RAG_INLINE_BYTE_THRESHOLD = 256 * 1024
 export const SESSION_ATTACHMENT_RAG_MAX_PARSED_BYTE_LENGTH = 6 * 1024 * 1024
-export const SESSION_ATTACHMENT_RAG_REQUIRES_CHATBOX_AI_ERROR = 'session_attachment_rag_requires_chatbox_ai'
-export const SESSION_ATTACHMENT_RAG_REQUIRES_KNOWLEDGE_BASE_ERROR = 'session_attachment_rag_requires_knowledge_base'
-export const SESSION_ATTACHMENT_RAG_REQUIRES_TOOL_USE_MODEL_ERROR = 'session_attachment_rag_requires_tool_use_model'
-export const SESSION_ATTACHMENT_RAG_PARSED_CONTENT_TOO_LARGE_ERROR = 'session_attachment_rag_parsed_content_too_large'
-export const SESSION_ATTACHMENT_RAG_LARGE_ATTACHMENT_WARNING = 'session_attachment_rag_large_attachment_warning'
-const SESSION_ATTACHMENT_RAG_AUTH_ERROR_PATTERNS = [
-  'provider chatbox-ai not set',
-  'chatbox-ai not set',
-  'missing token for rerank provider: chatbox-ai',
-]
-const SESSION_ATTACHMENT_RAG_INDEXING_ERROR_PATTERNS = [
-  'chatbox_session_rag_vectors.db',
-  'connectionfailed("unable to open connection to local database',
-  'session attachment rag vector store not initialized',
-]
 let sessionRagCapabilityCache:
   | {
       key: string
@@ -75,6 +77,48 @@ function getContentStats(content: string): ContentStats {
 
 function isParsedContentVeryLarge(stats: ContentStats): boolean {
   return stats.byteLength > SESSION_ATTACHMENT_RAG_MAX_PARSED_BYTE_LENGTH
+}
+
+async function storeRawFileBlob(file: File, rawKey: string): Promise<boolean> {
+  try {
+    const arrayBuffer = await file.arrayBuffer()
+    const bytes = new Uint8Array(arrayBuffer)
+    // Chunked base64 encoding to avoid call stack overflow on large files.
+    const CHUNK_SIZE = 8192
+    let binary = ''
+    for (let i = 0; i < bytes.length; i += CHUNK_SIZE) {
+      const chunk = bytes.subarray(i, Math.min(i + CHUNK_SIZE, bytes.length))
+      binary += String.fromCharCode(...chunk)
+    }
+    const dataURL = `data:${file.type || 'application/octet-stream'};base64,${btoa(binary)}`
+    await storage.setBlob(rawKey, dataURL)
+    log.debug(`Stored raw binary for non-text file: ${file.name}`)
+    return true
+  } catch (err) {
+    log.warn(`Failed to store raw binary for ${file.name}:`, err)
+    return false
+  }
+}
+
+function buildParsedContentTooLargeAttachmentResult(
+  file: File,
+  content: string,
+  storageKey: string,
+  parserType: string | undefined,
+  stats: ContentStats
+): AttachmentPreparationResult {
+  return {
+    file,
+    content,
+    storageKey,
+    ragMode: 'session-retrieval',
+    parserType,
+    lineCount: stats.lineCount,
+    byteLength: stats.byteLength,
+    sessionAttachmentAvailability: 'blocked',
+    sessionAttachmentBlockedReason: SESSION_ATTACHMENT_RAG_PARSED_CONTENT_TOO_LARGE_ERROR,
+    error: SESSION_ATTACHMENT_RAG_PARSED_CONTENT_TOO_LARGE_ERROR,
+  }
 }
 
 export function computePreviewMetadata(
@@ -129,25 +173,6 @@ function canFallbackToChatboxAI(): boolean {
   return Boolean(settingActions.getLicenseKey())
 }
 
-export function isSessionAttachmentRagAuthError(errorCode: string | undefined): boolean {
-  if (!errorCode) {
-    return false
-  }
-  if (errorCode === SESSION_ATTACHMENT_RAG_REQUIRES_CHATBOX_AI_ERROR) {
-    return true
-  }
-  const normalized = errorCode.toLowerCase()
-  return SESSION_ATTACHMENT_RAG_AUTH_ERROR_PATTERNS.some((pattern) => normalized.includes(pattern))
-}
-
-export function isSessionAttachmentRagIndexingError(errorCode: string | undefined): boolean {
-  if (!errorCode) {
-    return false
-  }
-  const normalized = errorCode.toLowerCase()
-  return SESSION_ATTACHMENT_RAG_INDEXING_ERROR_PATTERNS.some((pattern) => normalized.includes(pattern))
-}
-
 function hasUsableSessionAttachmentRagLicense(): boolean {
   const settings = settingsStore.getState()
   if (!settings.licenseKey) {
@@ -159,15 +184,38 @@ function hasUsableSessionAttachmentRagLicense(): boolean {
   return true
 }
 
+function hasDefaultSessionAttachmentEmbeddingModel(): boolean {
+  const defaultEmbeddingModel = settingsStore.getState().defaultEmbeddingModel
+  return Boolean(defaultEmbeddingModel?.provider && defaultEmbeddingModel.model)
+}
+
+function getDefaultSessionAttachmentEmbeddingModelLabel(): string {
+  const defaultEmbeddingModel = settingsStore.getState().defaultEmbeddingModel
+  return defaultEmbeddingModel?.provider && defaultEmbeddingModel.model
+    ? `${defaultEmbeddingModel.provider}:${defaultEmbeddingModel.model}`
+    : 'none'
+}
+
 async function canUseSessionAttachmentRag(): Promise<boolean> {
   const licenseKey = settingActions.getLicenseKey() || ''
   const hasUsableLicense = hasUsableSessionAttachmentRagLicense()
-  const capabilityCacheKey = `${licenseKey}:${hasUsableLicense ? 'active' : 'inactive'}`
+  const hasDefaultEmbeddingModel = hasDefaultSessionAttachmentEmbeddingModel()
+  const capabilityCacheKey = `${licenseKey}:${hasUsableLicense ? 'active' : 'inactive'}:${
+    hasDefaultEmbeddingModel ? 'default-embedding' : 'no-default-embedding'
+  }`
   if (sessionRagCapabilityCache?.key === capabilityCacheKey) {
     log.debug(
       `${SESSION_ATTACHMENT_RAG_LOG_PREFIX} Capability cache hit: embedding=${sessionRagCapabilityCache.value}, hasLicense=${Boolean(licenseKey)}`
     )
     return sessionRagCapabilityCache.value
+  }
+
+  if (hasDefaultEmbeddingModel) {
+    log.debug(
+      `${SESSION_ATTACHMENT_RAG_LOG_PREFIX} Capability enabled by default embedding model, hasLicense=${Boolean(licenseKey)}, platform=${platform.type}, embeddingModel=${getDefaultSessionAttachmentEmbeddingModelLabel()}`
+    )
+    sessionRagCapabilityCache = { key: capabilityCacheKey, value: true }
+    return true
   }
 
   if (!hasUsableLicense) {
@@ -197,7 +245,9 @@ async function parseFileWithLocalParser(
   const result = await platform.parseFileLocally(file)
 
   if (!result.isSupported || !result.key) {
-    throw new Error('local_parser_failed')
+    // Preserve a specific parser error code (password-protected / too large) so the
+    // UI can explain it; otherwise fall back to the generic failure.
+    throw new Error(result.errorCode || 'local_parser_failed')
   }
 
   // Get content from temporary storage
@@ -228,18 +278,26 @@ async function fallbackToChatboxAIParser(
 
 async function parseFileWithLocalFallback(
   file: File,
-  uniqKey: string
+  uniqKey: string,
+  options: { forceChatboxAIFallback?: boolean } = {}
 ): Promise<{ content: string; storageKey: string; tokenCountMap: Record<string, number>; parserType: string }> {
   try {
     const result = await parseFileWithLocalParser(file, uniqKey)
-    if (!hasParsedText(result.content) && canFallbackToChatboxAI()) {
+    if (!hasParsedText(result.content) && (options.forceChatboxAIFallback || canFallbackToChatboxAI())) {
       return await fallbackToChatboxAIParser(file, uniqKey, 'empty_content')
     }
     return result
   } catch (error) {
     log.error(`Local parsing failed for "${file.name}":`, error)
 
-    if (canFallbackToChatboxAI()) {
+    // Encrypted or oversized PDFs cannot be recovered by the cloud parser either,
+    // so surface the specific error directly instead of wasting a fallback upload.
+    const errorCode = error instanceof Error ? error.message : ''
+    if (NON_RECOVERABLE_LOCAL_PARSER_ERROR_CODES.has(errorCode)) {
+      throw error
+    }
+
+    if (options.forceChatboxAIFallback || canFallbackToChatboxAI()) {
       return await fallbackToChatboxAIParser(file, uniqKey, 'local_parser_failed')
     }
 
@@ -309,10 +367,14 @@ async function parseFileWithMineruService(
  */
 export async function prepareFileAttachment(
   file: File,
-  settings: SessionSettings
+  settings: SessionSettings,
+  options?: { agentMode?: boolean }
 ): Promise<AttachmentPreparationResult> {
   try {
     const uniqKey = StorageKeyGenerator.fileUniqKey(file)
+
+    const rawKey = `${uniqKey}_raw`
+    const isTextFile = isTextFilePath(file.name)
 
     // Check if file has already been processed (cache hit)
     const existingContent = await storage.getBlob(uniqKey).catch(() => null)
@@ -356,12 +418,18 @@ export async function prepareFileAttachment(
 
       await storage.setItem(`${uniqKey}_tokenMap`, tokenCountMap)
 
+      // Ensure cached non-text files still have the raw binary needed by sandbox code execution.
+      const hasRaw = !isTextFile
+        ? Boolean((await storage.getBlob(rawKey).catch(() => null)) ?? (await storeRawFileBlob(file, rawKey)))
+        : false
+
       return {
         file,
         content: existingContent,
         storageKey: uniqKey,
         ragMode: shouldUseSessionAttachmentRag ? 'session-retrieval' : 'inline',
         parserType: existingParserType,
+        rawStorageKey: hasRaw ? rawKey : undefined,
         tokenCountMap,
         lineCount,
         byteLength,
@@ -370,7 +438,35 @@ export async function prepareFileAttachment(
       }
     }
 
+    // Store raw binary for non-text files (used by sandbox code execution path)
+    if (!isTextFile) {
+      await storeRawFileBlob(file, rawKey)
+    }
+
     let result: { content: string; storageKey: string; tokenCountMap: Record<string, number>; parserType: string }
+
+    // In agent mode, skip content parsing when no parser can produce text.
+    // The raw binary is already stored above — the sandbox can use it directly.
+    // Store a short descriptor as the "parsed content" so the storageKey is valid.
+    if (
+      options?.agentMode &&
+      !isTextFile &&
+      (!isSupportedFile(file.name) || getEffectiveDocumentParserConfig().type === 'none')
+    ) {
+      log.debug(`Agent mode: skipping content parsing for sandbox-only file: ${file.name}`)
+      const sizeKB = (file.size / 1024).toFixed(1)
+      const descriptor = `[File: ${file.name} (${sizeKB} KB)]`
+      await storage.setBlob(uniqKey, descriptor)
+      return {
+        file,
+        content: descriptor,
+        storageKey: uniqKey,
+        rawStorageKey: rawKey,
+        ragMode: 'inline',
+        parserType: 'sandbox-raw',
+      }
+    }
+
     if (isTextFilePath(file.name)) {
       log.debug(`Text file detected, using local parser: ${file.name}`)
       result = await parseFileWithLocalFallback(file, uniqKey)
@@ -389,12 +485,7 @@ export async function prepareFileAttachment(
         }
 
         case 'chatbox-ai': {
-          try {
-            result = await parseFileWithChatboxAI(file, uniqKey)
-          } catch (error) {
-            log.error(`Chatbox AI parsing failed for "${file.name}":`, error)
-            throw new Error('chatbox_ai_parser_failed')
-          }
+          result = await parseFileWithLocalFallback(file, uniqKey, { forceChatboxAIFallback: true })
           break
         }
 
@@ -458,6 +549,7 @@ export async function prepareFileAttachment(
       storageKey: result.storageKey,
       ragMode: shouldUseSessionAttachmentRag ? 'session-retrieval' : 'inline',
       parserType: result.parserType,
+      rawStorageKey: !isTextFile ? rawKey : undefined,
       tokenCountMap,
       lineCount,
       byteLength,
@@ -635,7 +727,9 @@ export function constructUserMessage(
   if (preprocessedFiles.length > 0) {
     msg.files = preprocessedFiles.map((f) => {
       const localPath =
-        f.ragMode === 'session-retrieval' ? undefined : f.localPath || platform.getLocalFilePath(f.file) || undefined
+        f.ragMode === 'session-retrieval'
+          ? undefined
+          : f.localPath || platform.getLocalFilePath(f.file) || f.file.path || undefined
 
       return {
         id: f.storageKey || f.file.name,
@@ -643,6 +737,7 @@ export function constructUserMessage(
         fileType: f.file.type,
         parserType: f.parserType,
         storageKey: f.storageKey || undefined,
+        rawStorageKey: f.rawStorageKey,
         localPath,
         ragMode: f.ragMode ?? 'inline',
         sessionAttachmentId: f.sessionAttachmentId,
@@ -723,6 +818,12 @@ export function mergeSettings(
 export function initEmptyChatSession(): Omit<Session, 'id'> {
   const settings = settingsStore.getState().getSettings()
   const { chat: lastUsedChatModel } = lastUsedModelStore.getState()
+  const defaultChatModel = settings.defaultChatModel
+    ? {
+        provider: settings.defaultChatModel.provider,
+        modelId: settings.defaultChatModel.model,
+      }
+    : lastUsedChatModel || resolveChatboxLicenseDefaultModel(settings)
   const newSession: Omit<Session, 'id'> = {
     name: 'Untitled',
     type: 'chat',
@@ -731,12 +832,7 @@ export function initEmptyChatSession(): Omit<Session, 'id'> {
       maxContextMessageCount: settings.maxContextMessageCount ?? Number.MAX_SAFE_INTEGER,
       temperature: settings.temperature || undefined,
       topP: settings.topP || undefined,
-      ...(settings.defaultChatModel
-        ? {
-            provider: settings.defaultChatModel.provider,
-            modelId: settings.defaultChatModel.model,
-          }
-        : lastUsedChatModel),
+      ...defaultChatModel,
     },
   }
   if (settings.defaultPrompt) {
@@ -759,39 +855,29 @@ export function initEmptyPictureSession(): Omit<Session, 'id'> {
 }
 
 export function getSessionMeta(session: SessionMeta) {
-  return pick(session, ['id', 'name', 'starred', 'hidden', 'assistantAvatarKey', 'picUrl', 'backgroundImage', 'type'])
+  return pick(session, [
+    'id',
+    'name',
+    'starred',
+    'hidden',
+    'archivedAt',
+    'assistantAvatarKey',
+    'picUrl',
+    'backgroundImage',
+    'type',
+  ])
 }
 
-function _searchSessions(regexp: RegExp, s: Session) {
+function _searchSessions(query: string, s: Session) {
+  // Shared matcher, also used by the native mobile shell.
   const session = migrateSession(s)
-  const matchedMessages: Message[] = []
-  for (let i = session.messages.length - 1; i >= 0; i--) {
-    const message = session.messages[i]
-    if (regexp.test(getMessageText(message))) {
-      matchedMessages.push(message)
-    }
-  }
-  // 搜索会话的历史主题
-  if (session.threads) {
-    for (let i = session.threads.length - 1; i >= 0; i--) {
-      const thread = session.threads[i]
-      for (let j = thread.messages.length - 1; j >= 0; j--) {
-        const message = thread.messages[j]
-        if (regexp.test(getMessageText(message))) {
-          matchedMessages.push(message)
-        }
-      }
-    }
-  }
-  return matchedMessages.map((m) => migrateMessage(m))
+  return searchSessionMessages(session, query).map((m) => migrateMessage(m))
 }
 
 const SEARCH_PAGE_SIZE = 30
 const SEARCH_RESULT_LIMIT = 50
 
 export async function searchSessions(searchInput: string, sessionId?: string, onResult?: (result: Session[]) => void) {
-  const safeInput = searchInput.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, '\\$&')
-  const regexp = new RegExp(safeInput, 'i')
   let matchedMessageTotal = 0
 
   const emitBatch = (batch: Session[]) => {
@@ -804,7 +890,7 @@ export async function searchSessions(searchInput: string, sessionId?: string, on
   if (sessionId) {
     const session = await storage.getItem<Session | null>(StorageKeyGenerator.session(sessionId), null)
     if (session) {
-      const matchedMessages = _searchSessions(regexp, session)
+      const matchedMessages = _searchSessions(searchInput, session)
       matchedMessageTotal += matchedMessages.length
       emitBatch([{ ...session, messages: matchedMessages }])
     }
@@ -825,7 +911,7 @@ export async function searchSessions(searchInput: string, sessionId?: string, on
     const batch: Session[] = []
     for (const session of sessions) {
       if (!session) continue
-      const messages = _searchSessions(regexp, session)
+      const messages = _searchSessions(searchInput, session)
       if (messages.length === 0) continue
       matchedMessageTotal += messages.length
       batch.push({ ...session, messages })

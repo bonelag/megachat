@@ -57,4 +57,16 @@ describe('getHomeWelcomeCardMode', () => {
       })
     ).toBe('login')
   })
+
+  it('returns "none" during store review even when login card would otherwise show', () => {
+    expect(
+      getHomeWelcomeCardMode({
+        providerCount: 0,
+        isLoggedIn: false,
+        hasLicense: false,
+        hasExpiredLicense: false,
+        hideForStoreReview: true,
+      })
+    ).toBe('none')
+  })
 })

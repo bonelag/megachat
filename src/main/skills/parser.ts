@@ -88,13 +88,7 @@ export function parseSkillFile(skillMdPath: string, directoryName?: string): Par
       metadata.allowedTools = data.allowedTools.filter((t: unknown) => typeof t === 'string')
     }
 
-    const trimmedBody = body.trim()
-    const bodyTokenEstimate = Math.ceil(trimmedBody.length / 4)
-    if (bodyTokenEstimate > 5000) {
-      log.warn(`Skill "${skillName}" body is ~${bodyTokenEstimate} tokens (recommended < 5000): ${skillMdPath}`)
-    }
-
-    return { metadata, body: trimmedBody }
+    return { metadata, body: body.trim() }
   } catch (error) {
     log.error(`Failed to parse skill file: ${skillMdPath}`, error)
     return null

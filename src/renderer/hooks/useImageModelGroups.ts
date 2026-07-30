@@ -1,63 +1,21 @@
-import { ModelProviderEnum, ModelProviderType, type ProviderModelInfo } from '@shared/types'
+import { ModelProviderEnum, ModelProviderType } from '@shared/types'
 import { useQuery } from '@tanstack/react-query'
 import { useMemo } from 'react'
-import { getModelManifest, type RemoteModelInfo } from '@/packages/remote'
+import {
+  type ImageModelOption,
+  loadProviderImageModels,
+  manualImageModelToOption,
+  mergeImageModels,
+} from '@/packages/image-model-catalog'
 import { useLanguage, useSettingsStore } from '@/stores/settingsStore'
 import useChatboxAIModels from './useChatboxAIModels'
 import { useProviders } from './useProviders'
-
-export interface ImageModelOption {
-  modelId: string
-  displayName: string
-}
 
 export interface ImageModelGroup {
   label: string
   providerId: string
   isCustom?: boolean
   models: ImageModelOption[]
-}
-
-function remoteImageModelToOption(model: RemoteModelInfo): ImageModelOption {
-  return {
-    modelId: model.modelId,
-    displayName: model.modelName || model.modelId,
-  }
-}
-
-function manualImageModelToOption(model: ProviderModelInfo): ImageModelOption {
-  return {
-    modelId: model.modelId,
-    displayName: model.nickname || model.modelId,
-  }
-}
-
-function providerModelToOption(model: ProviderModelInfo): ImageModelOption {
-  return {
-    modelId: model.modelId,
-    displayName: model.nickname || model.modelId,
-  }
-}
-
-function mergeImageModels(remoteModels: ImageModelOption[], manualModels: ImageModelOption[]): ImageModelOption[] {
-  const modelsById = new Map<string, ImageModelOption>()
-  for (const model of remoteModels) {
-    modelsById.set(model.modelId, model)
-  }
-  for (const model of manualModels) {
-    modelsById.set(model.modelId, {
-      ...modelsById.get(model.modelId),
-      ...model,
-    })
-  }
-  return [...modelsById.values()]
-}
-
-function preferChatboxDefaultImageModel(models: ImageModelOption[]): ImageModelOption[] {
-  const preferredModelId = 'gpt-image-1.5'
-  const preferredModel = models.find((model) => model.modelId === preferredModelId)
-  if (!preferredModel) return models
-  return [preferredModel, ...models.filter((model) => model.modelId !== preferredModelId)]
 }
 
 export function useProviderImageModels(provider: ModelProviderEnum, enabled: boolean): ImageModelOption[] {
@@ -73,14 +31,11 @@ export function useProviderImageModels(provider: ModelProviderEnum, enabled: boo
     ],
     enabled,
     staleTime: 3600 * 1000,
-    queryFn: async () => {
-      const manifest = await getModelManifest({
-        aiProvider: provider,
+    queryFn: () =>
+      loadProviderImageModels(provider, {
         language,
-        licenseKey: provider === ModelProviderEnum.ChatboxAI ? licenseKey : undefined,
-      })
-      return manifest.imageModels.map(remoteImageModelToOption)
-    },
+        licenseKey,
+      }),
   })
 
   return data || []
@@ -106,9 +61,7 @@ export function useImageModelGroups(): ImageModelGroup[] {
     const groups: ImageModelGroup[] = []
     if (chatboxProvider) {
       const excluded = new Set(providerSettingsMap?.[ModelProviderEnum.ChatboxAI]?.excludedModels || [])
-      const models = preferChatboxDefaultImageModel(
-        chatboxAIImageModels.map(providerModelToOption).filter((model) => !excluded.has(model.modelId))
-      )
+      const models = chatboxAIImageModels.map(manualImageModelToOption).filter((model) => !excluded.has(model.modelId))
       if (models.length > 0) {
         groups.push({
           label: chatboxProvider.name,

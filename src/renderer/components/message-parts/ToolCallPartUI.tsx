@@ -1,6 +1,26 @@
-import { ActionIcon, Box, Code, Collapse, Group, Paper, Stack, Text, UnstyledButton } from '@mantine/core'
+import NiceModal from '@ebay/nice-modal-react'
+import {
+  ActionIcon,
+  Alert,
+  Box,
+  Button,
+  Code,
+  Collapse,
+  Group,
+  Paper,
+  Stack,
+  Text,
+  UnstyledButton,
+} from '@mantine/core'
 import { ChatboxAIAPIError } from '@shared/models/errors'
-import { type Message, type MessageReasoningPart, type MessageToolCallPart } from '@shared/types'
+import { SANDBOX_EXEC_ERROR_CODES } from '@shared/sandbox-provider'
+import type {
+  ImageGenerationApprovalDetails,
+  Message,
+  MessageReasoningPart,
+  MessageTextPart,
+  MessageToolCallPart,
+} from '@shared/types'
 import {
   IconBulb,
   IconCheck,
@@ -9,33 +29,117 @@ import {
   IconCode,
   IconCopy,
   IconDatabase,
+  IconDeviceFloppy,
+  IconDownload,
   IconEdit,
   IconExternalLink,
+  IconEye,
   IconFile,
   IconFileMinus,
   IconFileSearch,
+  IconFolderSearch,
+  IconInfoCircle,
   IconLoader,
+  IconMessage,
+  IconPhoto,
+  IconPlayerPlay,
+  IconSparkles,
   IconTerminal,
   IconWorld,
+  IconWriting,
   IconX,
 } from '@tabler/icons-react'
 import clsx from 'clsx'
-import { type FC, useCallback, useEffect, useRef, useState } from 'react'
+import { type FC, type ReactNode, useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-
+import { ImageGenerationResultGallery } from '@/components/chat/ImageGenerationResultGallery'
 import { ChatboxAIErrorMessage } from '@/components/common/ChatboxAIErrorMessage'
 import { ScalableIcon } from '@/components/common/ScalableIcon'
-import { formatElapsedTime, useThinkingTimer } from '@/hooks/useThinkingTimer'
+import { formatElapsedTime, MIN_STEP_DURATION_MS, useThinkingTimer } from '@/hooks/useThinkingTimer'
+import { getAcceptedImageBackgroundTaskResult } from '@/packages/chatbox-cli/background-task-result'
+import { formatComputePointsRemainingRatio } from '@/packages/chatbox-cli/compute-points'
 import { getToolName } from '@/packages/tools'
 import type { SearchResultItem } from '@/packages/web-search'
+import platform from '@/platform'
+import { useCurrentGeneratingId, useImageGenerationRecord } from '@/stores/imageGenerationStore'
+import { continuePausedToolCall, stopPausedToolCall } from '@/stores/sessionActions'
+import { useUIStore } from '@/stores/uiStore'
+import { inlineSandboxHtmlAssets } from './html-artifact-assets'
+import { getLocalFileName, localFilePathToUrl } from './local-file-url'
 
 // ─── Tool Error Result ──────────────────────────────────────────────
+
+const TOOL_ERROR_PREVIEW_LENGTH = 1_200
+const TOOL_PAYLOAD_PREVIEW_LENGTH = 8_000
+const APPROVAL_PAYLOAD_MAX_HEIGHT = 'min(240px, 35vh)'
+const GIT_BASH_DOWNLOAD_URL = 'https://git-scm.com/downloads/win'
+const WSL_INSTALL_URL = 'https://learn.microsoft.com/windows/wsl/install'
+
+function truncatePreview(text: string, maxLength: number): string {
+  if (text.length <= maxLength) return text
+  return `${text.slice(0, maxLength)}\n\n...`
+}
+
+function stringifyToolPayload(payload: unknown, maxLength = TOOL_PAYLOAD_PREVIEW_LENGTH): string {
+  let text: string
+  try {
+    text = typeof payload === 'string' ? payload : JSON.stringify(payload, null, 2)
+  } catch {
+    text = String(payload)
+  }
+  return truncatePreview(text, maxLength)
+}
+
+function isBashNotAvailableResult(part: MessageToolCallPart): boolean {
+  if (part.state !== 'result') return false
+  const result = part.result as { errorCode?: unknown } | undefined
+  return result?.errorCode === SANDBOX_EXEC_ERROR_CODES.BASH_NOT_AVAILABLE
+}
+
+const BashNotAvailableNotice: FC = () => {
+  const { t } = useTranslation()
+  return (
+    <Alert
+      color="yellow"
+      variant="light"
+      icon={<IconInfoCircle size={17} />}
+      title={t('Bash is not available on this Windows device.')}
+    >
+      <Stack gap="xs">
+        <Text size="sm">
+          {t(
+            'Install Git Bash or enable WSL to run Bash code. You can continue using Node.js code execution without either.'
+          )}
+        </Text>
+        <Group gap="xs">
+          <Button
+            size="compact-xs"
+            variant="light"
+            rightSection={<IconExternalLink size={12} />}
+            onClick={() => platform.openLink(GIT_BASH_DOWNLOAD_URL)}
+          >
+            {t('Download Git Bash')}
+          </Button>
+          <Button
+            size="compact-xs"
+            variant="subtle"
+            rightSection={<IconExternalLink size={12} />}
+            onClick={() => platform.openLink(WSL_INSTALL_URL)}
+          >
+            {t('How to install WSL2')}
+          </Button>
+        </Group>
+      </Stack>
+    </Alert>
+  )
+}
 
 function extractToolError(part: MessageToolCallPart): { errorCode?: number; errorText?: string } {
   if (part.state !== 'error') return {}
   const result = part.result as { error?: unknown; errorCode?: unknown } | undefined
   const errorCode = typeof result?.errorCode === 'number' ? result.errorCode : undefined
-  const errorText = typeof result?.error === 'string' ? result.error : undefined
+  const errorText =
+    result?.error === undefined ? undefined : stringifyToolPayload(result.error, TOOL_ERROR_PREVIEW_LENGTH)
   return { errorCode, errorText }
 }
 
@@ -59,16 +163,21 @@ const ToolCallErrorDetails: FC<{ part: MessageToolCallPart }> = ({ part }) => {
   )
 }
 
-/**
- * Tracks an `expanded` boolean that auto-expands when `isError` flips to true,
- * while still letting the user manually toggle. Initial value matches `isError`
- * to avoid a one-frame collapse-then-expand flash on parts that mount as errors.
- */
-function useAutoExpandOnError(isError: boolean): [boolean, (next: boolean | ((prev: boolean) => boolean)) => void] {
-  const [expanded, setExpanded] = useState(isError)
+// Auto-expand a step when it needs attention (paused / waiting for approval) and
+// auto-collapse once that resolves — e.g. after the user clicks Continue/Approve/Stop/Deny.
+// Only the transition edges drive expansion; a stable signal leaves the user's manual
+// toggle untouched.
+function useAutoExpandOnSignal(signal: boolean): [boolean, (next: boolean | ((prev: boolean) => boolean)) => void] {
+  const [expanded, setExpanded] = useState(signal)
+  const prevSignal = useRef(signal)
   useEffect(() => {
-    if (isError) setExpanded(true)
-  }, [isError])
+    if (signal && !prevSignal.current) {
+      setExpanded(true) // became active → reveal the action buttons
+    } else if (!signal && prevSignal.current) {
+      setExpanded(false) // resolved → collapse the tool call
+    }
+    prevSignal.current = signal
+  }, [signal])
   return [expanded, setExpanded]
 }
 
@@ -84,13 +193,48 @@ const toolIconMap: Record<string, React.ElementType> = {
   create_file: IconFile,
   edit_file: IconEdit,
   delete_file: IconFileMinus,
+  write_file: IconWriting,
+  search_files: IconFileSearch,
   list_files: IconFileSearch,
   get_files_meta: IconFileSearch,
   read_file_chunks: IconFile,
   read_file: IconFile,
+  code_execution: IconPlayerPlay,
+  parse_file: IconFile,
+  create_download: IconDownload,
+  search_file_content: IconFileSearch,
+  sandbox_bash: IconTerminal,
+  sandbox_read: IconFile,
+  sandbox_write: IconWriting,
+  sandbox_edit: IconEdit,
+  sandbox_grep: IconFileSearch,
+  sandbox_ls: IconFolderSearch,
+  sandbox_find: IconFolderSearch,
+  load_skill: IconSparkles,
+  chatbox_cli: IconSparkles,
+  user_exec: IconTerminal,
 }
 
 const getToolIcon = (toolName: string) => toolIconMap[toolName] || IconCode
+const TIMELINE_NODE_SIZE = 24
+const TIMELINE_NODE_TOP = 2
+const TIMELINE_NODE_CENTER = TIMELINE_NODE_TOP + TIMELINE_NODE_SIZE / 2
+const TIMELINE_STACK_GAP = 8
+
+const InlineToolIcon: FC<{
+  icon: React.ElementType
+  size: number
+  color?: string
+  className?: string
+}> = ({ icon: Icon, size, color, className }) => (
+  <Box
+    component="span"
+    className={clsx('inline-flex shrink-0 items-center justify-center leading-none', className)}
+    style={{ width: size, height: size, color }}
+  >
+    <Icon size={size} color={color} style={{ display: 'block' }} />
+  </Box>
+)
 
 // ─── Pill Header (shared) ───────────────────────────────────────────
 
@@ -102,7 +246,7 @@ const ToolCallPill: FC<{
 }> = ({ part, summary, onClick, expanded }) => {
   const Icon = getToolIcon(part.toolName)
   const isLoading = part.state === 'call'
-  const isError = part.state === 'error'
+  const isError = part.state === 'error' || isBashNotAvailableResult(part)
 
   const bgColor = isError
     ? 'color-mix(in srgb, var(--chatbox-tint-error) 8%, transparent)'
@@ -115,40 +259,43 @@ const ToolCallPill: FC<{
       : 'var(--chatbox-tint-success)'
 
   return (
-    <UnstyledButton onClick={onClick}>
+    <UnstyledButton onClick={onClick} style={{ display: 'inline-flex', maxWidth: '100%', verticalAlign: 'middle' }}>
       <Group
         gap={6}
         px={10}
         py={2}
+        align="center"
+        wrap="nowrap"
         style={{
           borderRadius: 'var(--mantine-radius-xl)',
           backgroundColor: bgColor,
           display: 'inline-flex',
+          maxWidth: '100%',
         }}
       >
-        <Icon size={13} color={iconColor} style={{ flexShrink: 0 }} />
-        <Text size="xs" fw={500} c={isError ? 'chatbox-error' : undefined} lh={1}>
-          {getToolName(part.toolName)}
+        <InlineToolIcon icon={Icon} size={13} color={iconColor} />
+        <Text size="xs" fw={500} c={isError ? 'chatbox-error' : undefined} lh="13px" truncate="end">
+          {getToolName(part.toolName, part.args)}
         </Text>
         {isLoading ? (
-          <IconLoader size={11} className="animate-spin" color="var(--chatbox-tint-brand)" style={{ flexShrink: 0 }} />
+          <InlineToolIcon icon={IconLoader} size={11} color="var(--chatbox-tint-brand)" className="animate-spin" />
         ) : isError ? (
-          <IconCircleXFilled size={11} color="var(--chatbox-tint-error)" style={{ flexShrink: 0 }} />
+          <InlineToolIcon icon={IconCircleXFilled} size={11} color="var(--chatbox-tint-error)" />
         ) : (
           <>
-            <IconCheck size={11} color="var(--chatbox-tint-success)" style={{ flexShrink: 0 }} />
+            <InlineToolIcon icon={IconCheck} size={11} color="var(--chatbox-tint-success)" />
             {summary && (
-              <Text size="xs" c="chatbox-tertiary" lh={1}>
+              <Text size="xs" c="chatbox-tertiary" lh="13px" truncate="end" style={{ minWidth: 0 }}>
                 · {summary}
               </Text>
             )}
           </>
         )}
         {!isLoading && (
-          <IconChevronDown
+          <InlineToolIcon
+            icon={IconChevronDown}
             size={11}
             color="var(--chatbox-tertiary)"
-            style={{ flexShrink: 0 }}
             className={clsx('transition-transform', expanded ? 'rotate-180' : '')}
           />
         )}
@@ -256,7 +403,7 @@ export const WebSearchGroupUI: FC<{ parts: MessageToolCallPart[] }> = ({ parts }
     resultCount > 0 ? t('{{count}} results', { count: resultCount }) : noResults ? t('Search unsuccessful') : undefined
 
   const isFailState = hasError || noResults
-  const [expanded, setExpanded] = useAutoExpandOnError(hasError)
+  const [expanded, setExpanded] = useAutoExpandOnSignal(false)
   const errorPart = hasError ? parts.find((p) => p.state === 'error') : undefined
   const bgColor = isFailState
     ? 'var(--chatbox-background-gray-secondary)'
@@ -268,9 +415,7 @@ export const WebSearchGroupUI: FC<{ parts: MessageToolCallPart[] }> = ({ parts }
   return (
     <Stack gap={4} mb={4}>
       <UnstyledButton
-        onClick={
-          resultCount > 0 || queries.length > 0 || hasError ? () => setExpanded((prev) => !prev) : undefined
-        }
+        onClick={resultCount > 0 || queries.length > 0 || hasError ? () => setExpanded((prev) => !prev) : undefined}
       >
         <Group
           gap={4}
@@ -332,11 +477,7 @@ export const WebSearchGroupUI: FC<{ parts: MessageToolCallPart[] }> = ({ parts }
         </div>
       )}
       {expanded && errorPart && (
-        <Box
-          ml={4}
-          pl="sm"
-          style={{ borderLeft: '1px solid var(--chatbox-tint-error)' }}
-        >
+        <Box ml={4} pl="sm" style={{ borderLeft: '1px solid var(--chatbox-tint-error)' }}>
           <ToolCallErrorDetails part={errorPart} />
         </Box>
       )}
@@ -349,7 +490,7 @@ export const WebSearchGroupUI: FC<{ parts: MessageToolCallPart[] }> = ({ parts }
 const ParseLinkUI: FC<{ part: MessageToolCallPart }> = ({ part }) => {
   const isLoading = part.state === 'call'
   const isError = part.state === 'error'
-  const [expanded, setExpanded] = useAutoExpandOnError(isError)
+  const [expanded, setExpanded] = useAutoExpandOnSignal(false)
   const result = part.result as Record<string, unknown> | undefined
   const title = (result?.title as string) || ''
   const content = (result?.content as string) || ''
@@ -382,7 +523,7 @@ const ParseLinkUI: FC<{ part: MessageToolCallPart }> = ({ part }) => {
         >
           <IconExternalLink size={16} color="var(--chatbox-tint-success)" style={{ flexShrink: 0 }} />
           <Text size="sm" fw={600} c={isError ? 'chatbox-error' : 'chatbox-secondary'} lh={1}>
-            {getToolName(part.toolName)}
+            {getToolName(part.toolName, part.args)}
           </Text>
           {isLoading ? (
             <IconLoader
@@ -434,16 +575,45 @@ const ParseLinkUI: FC<{ part: MessageToolCallPart }> = ({ part }) => {
   )
 }
 
+const ParseLinkDetails: FC<{ part: MessageToolCallPart }> = ({ part }) => {
+  const isError = part.state === 'error'
+  const result = part.result as Record<string, unknown> | undefined
+  const content = (result?.content as string) || ''
+  const url = (result?.url as string) || ((part.args as Record<string, unknown>)?.url as string) || ''
+
+  return (
+    <Stack gap={6}>
+      {url && (
+        <Text size="xs" c="chatbox-tertiary">
+          {url}
+        </Text>
+      )}
+      {isError ? (
+        <ToolCallErrorDetails part={part} />
+      ) : (
+        content && (
+          <Text size="sm" c="chatbox-tertiary" style={{ whiteSpace: 'pre-line', lineHeight: 1.5 }}>
+            {content}
+          </Text>
+        )
+      )}
+    </Stack>
+  )
+}
+
 // ─── General Tool Call ──────────────────────────────────────────────
 
 const GeneralToolCallUI: FC<{ part: MessageToolCallPart }> = ({ part }) => {
-  const { t } = useTranslation()
-  const isError = part.state === 'error'
-  const [expanded, setExpanded] = useAutoExpandOnError(isError)
+  const isBashNotAvailable = isBashNotAvailableResult(part)
+  const isError = part.state === 'error' || isBashNotAvailable
+  const [expanded, setExpanded] = useAutoExpandOnSignal(isBashNotAvailable)
+  const acceptedImageTask = getAcceptedImageBackgroundTaskResult(part.result)
+  const { data: imageRecord } = useImageGenerationRecord(acceptedImageTask?.recordId ?? null)
 
   return (
     <Stack gap={6} mb="xs">
       <ToolCallPill part={part} onClick={() => setExpanded((prev) => !prev)} expanded={expanded} />
+      <ImageGenerationResultGallery images={imageRecord?.generatedImages ?? []} />
       <Collapse in={expanded}>
         <Box
           ml={4}
@@ -452,29 +622,379 @@ const GeneralToolCallUI: FC<{ part: MessageToolCallPart }> = ({ part }) => {
             borderLeft: `2px solid ${isError ? 'var(--chatbox-tint-error)' : 'var(--chatbox-tint-success)'}`,
           }}
         >
+          <GeneralToolCallDetails part={part} />
+        </Box>
+      </Collapse>
+    </Stack>
+  )
+}
+
+const GeneralToolCallDetails: FC<{ part: MessageToolCallPart }> = ({ part }) => {
+  const { t } = useTranslation()
+  const isError = part.state === 'error'
+  const isBashNotAvailable = isBashNotAvailableResult(part)
+
+  return (
+    <Stack gap="xs">
+      <Box>
+        <Text size="xs" c="chatbox-tertiary" fw={500} mb={2}>
+          {t('Arguments')}
+        </Text>
+        <Code block>{stringifyToolPayload(part.args)}</Code>
+      </Box>
+      {isError ? (
+        <Box>
+          <Text size="xs" c="chatbox-tertiary" fw={500} mb={2}>
+            {t('Error')}
+          </Text>
+          <ToolCallErrorDetails part={part} />
+        </Box>
+      ) : isBashNotAvailable ? (
+        <BashNotAvailableNotice />
+      ) : (
+        !!part.result && (
+          <Box>
+            <Text size="xs" c="chatbox-tertiary" fw={500} mb={2}>
+              {t('Result')}
+            </Text>
+            <Code block>{stringifyToolPayload(part.result)}</Code>
+          </Box>
+        )
+      )}
+    </Stack>
+  )
+}
+
+// ─── Create Download ─────────────────────────────────────────────────
+
+const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.svg'])
+const HTML_EXTENSIONS = new Set(['.html', '.htm'])
+
+function getFileExtension(filePath: string): string {
+  const name = getLocalFileName(filePath)
+  const dotIndex = name.lastIndexOf('.')
+  return dotIndex >= 0 ? name.slice(dotIndex).toLowerCase() : ''
+}
+
+function isImageFile(filePath: string): boolean {
+  return IMAGE_EXTENSIONS.has(getFileExtension(filePath))
+}
+
+function isHtmlFile(filePath: string): boolean {
+  return HTML_EXTENSIONS.has(getFileExtension(filePath))
+}
+
+function decodeBase64Utf8(base64: string): string {
+  const binary = atob(base64)
+  const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0))
+  return new TextDecoder().decode(bytes)
+}
+
+const CreateDownloadUI: FC<{ part: MessageToolCallPart } & ToolCallActionContext> = ({
+  part,
+  sessionId,
+  messageId,
+}) => {
+  const { t } = useTranslation()
+  const [saving, setSaving] = useState(false)
+  const [saveError, setSaveError] = useState<string | null>(null)
+  const [previewing, setPreviewing] = useState(false)
+  const [previewError, setPreviewError] = useState<string | null>(null)
+  const [previewFailed, setPreviewFailed] = useState(false)
+  const setPictureShow = useUIStore((s) => s.setPictureShow)
+  const isLoading = part.state === 'call'
+  const isError = part.state === 'error'
+  const result = part.result as Record<string, unknown> | undefined
+  const filePath = (result?.file_path as string) || ((part.args as Record<string, unknown>)?.file_path as string) || ''
+  const fileName = filePath ? getLocalFileName(filePath) : 'File'
+  const isDownloadable = result?.downloadable === true
+  const isSandboxPath = filePath.includes('/chatbox-sandbox/') || filePath.includes('\\chatbox-sandbox\\')
+  const canPreview = isDownloadable && !!filePath && isImageFile(filePath) && isSandboxPath
+  const canPreviewHtml = isDownloadable && !!filePath && isHtmlFile(filePath) && isSandboxPath
+  const imageUrl = canPreview ? localFilePathToUrl(filePath) : null
+
+  const handleSave = useCallback(async () => {
+    if (!filePath) return
+    setSaving(true)
+    setSaveError(null)
+    try {
+      const platform = (await import('@/platform')).default
+      if (platform.sandboxExportFile) {
+        const res = await platform.sandboxExportFile({ sandboxPath: filePath })
+        if (!res.success && res.error && res.error !== 'Save dialog cancelled') {
+          setSaveError(res.error)
+        }
+      }
+    } catch (err) {
+      console.error('Failed to export file:', err)
+      setSaveError(t('File no longer available'))
+    } finally {
+      setSaving(false)
+    }
+  }, [filePath, t])
+
+  const handlePreviewHtml = useCallback(async () => {
+    if (!filePath) return
+    setPreviewing(true)
+    setPreviewError(null)
+    try {
+      const platform = (await import('@/platform')).default
+      if (!platform.sandboxReadFileBase64) {
+        setPreviewError(t('Preview not available'))
+        return
+      }
+      if (platform.sandboxCreateHtmlPreview) {
+        const preview = await platform.sandboxCreateHtmlPreview({ filePath })
+        if (preview.success && preview.url) {
+          await NiceModal.show('artifact-preview', {
+            htmlCode: '',
+            previewUrl: preview.url,
+            sandboxPath: filePath,
+            sessionId,
+            uniqueId: messageId ? `${messageId}-tool-${part.toolCallId}` : undefined,
+          })
+          return
+        }
+      }
+      const res = await platform.sandboxReadFileBase64({ filePath })
+      if (!res.success || !res.base64) {
+        setPreviewError(res.error || t('Preview not available'))
+        return
+      }
+      const htmlCode = await inlineSandboxHtmlAssets(decodeBase64Utf8(res.base64), filePath, (assetPath) => {
+        if (!platform.sandboxReadFileBase64) {
+          return Promise.resolve({ success: false })
+        }
+        return platform.sandboxReadFileBase64({ filePath: assetPath })
+      })
+      await NiceModal.show('artifact-preview', {
+        htmlCode,
+        sessionId,
+        uniqueId: messageId ? `${messageId}-tool-${part.toolCallId}` : undefined,
+      })
+    } catch (err) {
+      console.error('Failed to preview HTML artifact:', err)
+      setPreviewError(t('Preview not available'))
+    } finally {
+      setPreviewing(false)
+    }
+  }, [filePath, messageId, part.toolCallId, sessionId, t])
+
+  if (isLoading) {
+    return (
+      <Group gap={6} mb="xs">
+        <IconLoader size={14} className="animate-spin" color="var(--chatbox-tint-brand)" />
+        <Text size="sm" c="chatbox-tertiary">
+          {t('Preparing file...')}
+        </Text>
+      </Group>
+    )
+  }
+
+  if (isError || !isDownloadable) {
+    return <GeneralToolCallUI part={part} />
+  }
+
+  return (
+    <Stack gap={6} mb="xs">
+      {imageUrl && !previewFailed && (
+        <Box
+          style={{
+            maxWidth: 400,
+            borderRadius: 'var(--mantine-radius-md)',
+            overflow: 'hidden',
+            cursor: 'pointer',
+          }}
+          onClick={() => setPictureShow({ picture: { url: imageUrl } })}
+        >
+          <img
+            src={imageUrl}
+            alt={fileName}
+            style={{ display: 'block', width: '100%', height: 'auto' }}
+            onError={() => setPreviewFailed(true)}
+          />
+        </Box>
+      )}
+      {previewFailed && canPreview && (
+        <Text size="xs" c="dimmed">
+          {t('Preview not available')}
+        </Text>
+      )}
+      <Paper
+        radius="md"
+        p="xs"
+        bg="var(--chatbox-background-gray-secondary)"
+        style={{ display: 'flex', alignItems: 'center', gap: 8, maxWidth: '100%' }}
+      >
+        <IconFile size={18} color="var(--chatbox-tint-brand)" style={{ flexShrink: 0 }} />
+        <Text size="sm" fw={500} truncate title={filePath} style={{ flex: '1 1 0', minWidth: 0 }}>
+          {fileName}
+        </Text>
+        <Group gap={8} wrap="nowrap" style={{ flexShrink: 0 }}>
+          {canPreviewHtml && (
+            <Button
+              variant="light"
+              size="compact-xs"
+              leftSection={<IconEye size={14} />}
+              loading={previewing}
+              onClick={handlePreviewHtml}
+            >
+              {t('Preview')}
+            </Button>
+          )}
+          <Button
+            variant="light"
+            size="compact-xs"
+            leftSection={<IconDeviceFloppy size={14} />}
+            loading={saving}
+            onClick={handleSave}
+          >
+            {t('Save')}
+          </Button>
+        </Group>
+      </Paper>
+      {saveError && (
+        <Text size="xs" c="red">
+          {saveError}
+        </Text>
+      )}
+      {previewError && (
+        <Text size="xs" c="red">
+          {previewError}
+        </Text>
+      )}
+    </Stack>
+  )
+}
+
+function isDownloadArtifact(part: MessageToolCallPart): boolean {
+  if (part.toolName !== 'create_download' || part.state !== 'result') return false
+  const result = part.result as Record<string, unknown> | undefined
+  return result?.downloadable === true
+}
+
+export const DownloadArtifactsUI: FC<{ parts: MessageToolCallPart[] } & ToolCallActionContext> = ({
+  parts,
+  sessionId,
+  messageId,
+}) => {
+  const { t } = useTranslation()
+  const artifacts = parts.filter(isDownloadArtifact)
+
+  if (artifacts.length === 0) return null
+
+  return (
+    <Stack
+      gap={6}
+      mt={10}
+      pt={8}
+      mb={2}
+      style={{ borderTop: '1px solid color-mix(in srgb, var(--chatbox-border-primary) 70%, transparent)' }}
+    >
+      <Group gap={6}>
+        <IconDownload size={14} color="var(--chatbox-tint-brand)" />
+        <Text size="xs" fw={600} c="chatbox-secondary">
+          {t('Artifacts')}
+        </Text>
+      </Group>
+      <Stack gap={6}>
+        {artifacts.map((part) => (
+          <CreateDownloadUI key={part.toolCallId} part={part} sessionId={sessionId} messageId={messageId} />
+        ))}
+      </Stack>
+    </Stack>
+  )
+}
+
+// ─── User Exec ──────────────────────────────────────────────────────
+
+const UserExecUI: FC<{ part: MessageToolCallPart }> = ({ part }) => {
+  const { t } = useTranslation()
+  const command = (part.args as Record<string, unknown>)?.command as string | undefined
+  const [expanded, setExpanded] = useState(false)
+
+  const isExecuting = part.state === 'call'
+  const isError = part.state === 'error'
+  const isDenied =
+    part.state === 'result' && (part.result as Record<string, unknown>)?.stderr === 'Command denied by user.'
+
+  const bgColor =
+    isError || isDenied
+      ? 'color-mix(in srgb, var(--chatbox-tint-error) 8%, transparent)'
+      : 'var(--chatbox-background-gray-secondary)'
+
+  return (
+    <Stack gap={6} mb="xs">
+      <UnstyledButton onClick={() => setExpanded((prev) => !prev)}>
+        <Group
+          gap={6}
+          px={10}
+          py={4}
+          style={{
+            borderRadius: 'var(--mantine-radius-md)',
+            backgroundColor: bgColor,
+            border: '1px solid transparent',
+            display: 'inline-flex',
+          }}
+        >
+          <IconTerminal
+            size={13}
+            color={
+              isExecuting
+                ? 'var(--chatbox-tint-brand)'
+                : isError || isDenied
+                  ? 'var(--chatbox-tint-error)'
+                  : 'var(--chatbox-tint-success)'
+            }
+            style={{ flexShrink: 0 }}
+          />
+          <Text size="xs" fw={500} lh={1}>
+            {getToolName(part.toolName, part.args)}
+          </Text>
+          {isExecuting && (
+            <IconLoader
+              size={11}
+              className="animate-spin"
+              color="var(--chatbox-tint-brand)"
+              style={{ flexShrink: 0 }}
+            />
+          )}
+          {isDenied && (
+            <Text size="xs" c="chatbox-error" lh={1}>
+              {t('Denied')}
+            </Text>
+          )}
+          {part.state === 'result' && !isDenied && (
+            <IconCheck size={11} color="var(--chatbox-tint-success)" style={{ flexShrink: 0 }} />
+          )}
+          {isError && <IconCircleXFilled size={11} color="var(--chatbox-tint-error)" style={{ flexShrink: 0 }} />}
+        </Group>
+      </UnstyledButton>
+
+      <Collapse in={expanded}>
+        <Box
+          ml={4}
+          pl="sm"
+          style={{
+            borderLeft: `2px solid ${isError || isDenied ? 'var(--chatbox-tint-error)' : 'var(--chatbox-tint-success)'}`,
+          }}
+        >
           <Stack gap="xs">
-            <Box>
-              <Text size="xs" c="chatbox-tertiary" fw={500} mb={2}>
-                {t('Arguments')}
-              </Text>
-              <Code block>{JSON.stringify(part.args, null, 2)}</Code>
-            </Box>
-            {isError ? (
+            {command && (
               <Box>
                 <Text size="xs" c="chatbox-tertiary" fw={500} mb={2}>
-                  {t('Error')}
+                  {t('Command')}
                 </Text>
-                <ToolCallErrorDetails part={part} />
+                <Code block>{command}</Code>
               </Box>
-            ) : (
-              !!part.result && (
-                <Box>
-                  <Text size="xs" c="chatbox-tertiary" fw={500} mb={2}>
-                    {t('Result')}
-                  </Text>
-                  <Code block>{JSON.stringify(part.result, null, 2)}</Code>
-                </Box>
-              )
+            )}
+            {!!part.result && (
+              <Box>
+                <Text size="xs" c="chatbox-tertiary" fw={500} mb={2}>
+                  {t('Result')}
+                </Text>
+                <Code block>{stringifyToolPayload(part.result)}</Code>
+              </Box>
             )}
           </Stack>
         </Box>
@@ -485,29 +1005,605 @@ const GeneralToolCallUI: FC<{ part: MessageToolCallPart }> = ({ part }) => {
 
 // ─── Entry Point ────────────────────────────────────────────────────
 
-export const ToolCallPartUI: FC<{ part: MessageToolCallPart }> = ({ part }) => {
+type ToolCallActionContext = {
+  sessionId?: string
+  messageId?: string
+}
+
+export const ToolCallPartUI: FC<{ part: MessageToolCallPart } & ToolCallActionContext> = ({
+  part,
+  sessionId,
+  messageId,
+}) => {
+  if (part.state === 'paused') {
+    return <ToolCallGroupUI parts={[part]} sessionId={sessionId} messageId={messageId} />
+  }
   if (part.toolName === 'web_search') {
     return <WebSearchGroupUI parts={[part]} />
   }
   if (part.toolName === 'parse_link') {
     return <ParseLinkUI part={part} />
   }
+  if (part.toolName === 'create_download') {
+    return <CreateDownloadUI part={part} sessionId={sessionId} messageId={messageId} />
+  }
+  if (part.toolName === 'user_exec') {
+    return <UserExecUI part={part} />
+  }
   return <GeneralToolCallUI part={part} />
 }
 
-// ─── Reasoning / Thinking (Minimal Inline) ──────────────────────────
+// ─── Tool Call Timeline (consecutive tool calls) ─────────────────
 
-export const ReasoningContentUI: FC<{
-  message: Message
-  part?: MessageReasoningPart
-  onCopyReasoningContent: (content: string) => (e: React.MouseEvent<HTMLButtonElement>) => void
-}> = ({ message, part, onCopyReasoningContent }) => {
-  const reasoningContent = part?.text ?? message.reasoningContent ?? ''
+function getFirstStringValue(source: unknown, keys: string[]): string | undefined {
+  if (!source || typeof source !== 'object') return undefined
+  const record = source as Record<string, unknown>
+  for (const key of keys) {
+    const value = record[key]
+    if (typeof value === 'string' && value.trim()) return value.trim()
+  }
+  return undefined
+}
+
+function truncateSummary(value: string, maxLength = 56): string {
+  return value.length > maxLength ? `${value.slice(0, maxLength - 1)}…` : value
+}
+
+const ToolCallRunningDots: FC = () => (
+  <Group gap={2} wrap="nowrap" ml={2} style={{ color: 'var(--chatbox-tint-brand)' }}>
+    {[0, 1, 2].map((index) => (
+      <Box
+        key={index}
+        component="span"
+        className="animate-pulse"
+        style={{
+          width: 5,
+          height: 5,
+          borderRadius: 999,
+          backgroundColor: 'currentColor',
+          animationDelay: `${index * 150}ms`,
+        }}
+      />
+    ))}
+  </Group>
+)
+
+const ImageGenerationApprovalCard: FC<{
+  details: ImageGenerationApprovalDetails
+  disabled: boolean
+  onApprove: () => void
+  onDeny: () => void
+}> = ({ details, disabled, onApprove, onDeny }) => {
+  const { t, i18n } = useTranslation()
+  const usesChatboxQuota = details.billing === 'chatbox_quota'
+  const computePointsRemainingRatio = details.computePointsRemainingRatio ?? details.computePointsRemaining
+
+  return (
+    <Stack gap="sm">
+      <Group gap="xs" wrap="nowrap">
+        <Box className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-chatbox-background-brand-secondary">
+          <IconPhoto size={18} color="var(--chatbox-tint-brand)" />
+        </Box>
+        <Box className="min-w-0">
+          <Text size="sm" fw={600} c="chatbox-primary">
+            {t('Generate images')}
+          </Text>
+          <Text size="xs" c="chatbox-tertiary" truncate="end">
+            {details.provider} · {details.modelId}
+          </Text>
+        </Box>
+      </Group>
+
+      <Paper p="xs" radius="md" bg="var(--chatbox-background-primary)" withBorder>
+        <Text size="xs" c="chatbox-tertiary" mb={3}>
+          {t('Prompt')}
+        </Text>
+        <Box style={{ maxHeight: APPROVAL_PAYLOAD_MAX_HEIGHT, overflow: 'auto' }}>
+          <Text size="sm" c="chatbox-primary" style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>
+            {details.prompt}
+          </Text>
+        </Box>
+      </Paper>
+
+      <Group gap="lg">
+        <Box>
+          <Text size="xs" c="chatbox-tertiary">
+            {t('Number of images')}
+          </Text>
+          <Text size="sm" fw={500}>
+            {details.count}
+          </Text>
+        </Box>
+        {details.aspectRatio && (
+          <Box>
+            <Text size="xs" c="chatbox-tertiary">
+              {t('Aspect ratio')}
+            </Text>
+            <Text size="sm" fw={500}>
+              {details.aspectRatio}
+            </Text>
+          </Box>
+        )}
+        {details.style && (
+          <Box>
+            <Text size="xs" c="chatbox-tertiary">
+              {t('Image style')}
+            </Text>
+            <Text size="sm" fw={500}>
+              {details.style}
+            </Text>
+          </Box>
+        )}
+      </Group>
+
+      <Alert color="yellow" variant="light" icon={<IconInfoCircle size={16} />} p="xs">
+        <Stack gap={3}>
+          <Text size="xs" fw={500}>
+            {usesChatboxQuota
+              ? t('This request will consume {{count}} image quota and compute points.', { count: details.count })
+              : t('This request may incur charges from {{provider}}.', { provider: details.provider })}
+          </Text>
+          {usesChatboxQuota && details.imageQuota && (
+            <Text size="xs" c="chatbox-secondary">
+              {t('Image quota remaining: {{remaining}} / {{total}}', {
+                remaining: details.imageQuota.remaining.toLocaleString(),
+                total: details.imageQuota.total.toLocaleString(),
+              })}
+            </Text>
+          )}
+          {usesChatboxQuota && computePointsRemainingRatio !== undefined && (
+            <Text size="xs" c="chatbox-secondary">
+              {t('Compute points remaining: {{points}}', {
+                points: formatComputePointsRemainingRatio(computePointsRemainingRatio, i18n.language),
+              })}
+            </Text>
+          )}
+          <Text size="xs" c="chatbox-tertiary">
+            {usesChatboxQuota
+              ? t('Exact compute point usage is calculated after generation.')
+              : t('Chatbox AI image quota will not be used.')}
+          </Text>
+        </Stack>
+      </Alert>
+
+      <Group gap="xs">
+        <Button size="compact-sm" color="chatbox-brand" disabled={disabled} onClick={onApprove}>
+          {t('Approve and generate')}
+        </Button>
+        <Button size="compact-sm" variant="light" color="gray" disabled={disabled} onClick={onDeny}>
+          {t('Cancel')}
+        </Button>
+      </Group>
+    </Stack>
+  )
+}
+
+const PausedToolCallDetails: FC<{ part: MessageToolCallPart } & ToolCallActionContext> = ({
+  part,
+  sessionId,
+  messageId,
+}) => {
   const { t } = useTranslation()
+  const pauseReason = part.pauseReason
+  if (
+    pauseReason?.type === 'app_action_approval' &&
+    pauseReason.action === 'image.generate' &&
+    pauseReason.details?.type === 'image_generation'
+  ) {
+    return (
+      <ImageGenerationApprovalCard
+        details={pauseReason.details}
+        disabled={!sessionId || !messageId}
+        onApprove={() => sessionId && messageId && continuePausedToolCall(sessionId, messageId, part.toolCallId)}
+        onDeny={() => sessionId && messageId && stopPausedToolCall(sessionId, messageId, part.toolCallId)}
+      />
+    )
+  }
+
+  const isApproval =
+    pauseReason?.type === 'user_exec_approval' ||
+    pauseReason?.type === 'file_mutation_approval' ||
+    pauseReason?.type === 'app_action_approval'
+  const title =
+    pauseReason?.type === 'tool_call_limit'
+      ? t('Paused after {{count}} steps. Check whether the task is on track, then continue or stop to adjust.', {
+          count: pauseReason.maxToolCalls,
+        })
+      : pauseReason?.type === 'user_exec_approval'
+        ? t('Approval required before executing this command.')
+        : pauseReason?.type === 'file_mutation_approval'
+          ? t('Approval required before modifying files.')
+          : pauseReason?.type === 'app_action_approval'
+            ? pauseReason.title
+            : t('Tool execution is paused.')
+  const payload =
+    pauseReason?.type === 'user_exec_approval'
+      ? pauseReason.command
+      : pauseReason?.type === 'file_mutation_approval'
+        ? `${pauseReason.title}\n\n${pauseReason.preview}`
+        : pauseReason?.type === 'app_action_approval'
+          ? pauseReason.preview
+          : stringifyToolPayload(part.args)
+  return (
+    <Stack gap="xs">
+      <Text size="xs" c="chatbox-secondary">
+        {title}
+      </Text>
+      <Group gap="xs">
+        <Button
+          size="compact-xs"
+          color="chatbox-brand"
+          disabled={!sessionId || !messageId}
+          onClick={() => sessionId && messageId && continuePausedToolCall(sessionId, messageId, part.toolCallId)}
+        >
+          {isApproval ? t('Approve') : t('Continue')}
+        </Button>
+        <Button
+          size="compact-xs"
+          variant="light"
+          color="chatbox-error"
+          disabled={!sessionId || !messageId}
+          onClick={() => sessionId && messageId && stopPausedToolCall(sessionId, messageId, part.toolCallId)}
+        >
+          {isApproval ? t('Deny') : t('Stop')}
+        </Button>
+      </Group>
+      <Box style={{ maxHeight: APPROVAL_PAYLOAD_MAX_HEIGHT, overflow: 'auto' }}>
+        <Code block>{payload}</Code>
+      </Box>
+      {pauseReason?.type === 'user_exec_approval' && pauseReason.explanation && (
+        <Text size="xs" c="chatbox-secondary" style={{ whiteSpace: 'pre-wrap' }}>
+          {pauseReason.explanation}
+        </Text>
+      )}
+      {pauseReason?.type === 'user_exec_approval' && pauseReason.explanationError && (
+        <Text size="xs" c="chatbox-tertiary">
+          {t('Explanation failed')}
+        </Text>
+      )}
+    </Stack>
+  )
+}
+
+// Web search detail shown when a web_search timeline step is expanded: the
+// queries plus the result cards (the same cards the old grouped card UI used).
+const WebSearchDetails: FC<{ part: MessageToolCallPart }> = ({ part }) => {
+  const { t } = useTranslation()
+  if (part.state === 'error') {
+    return <ToolCallErrorDetails part={part} />
+  }
+  const results = extractSearchResults(part)
+  const queries = extractSearchQueries([part])
+  return (
+    <Stack gap={6}>
+      {queries.length > 0 && (
+        <Group gap={6}>
+          {queries.map((query, index) => (
+            <Text key={`${index}-${query}`} size="xs" c="chatbox-tertiary" fs="italic" lh={1.4}>
+              "{query}"
+            </Text>
+          ))}
+        </Group>
+      )}
+      {results.length > 0 ? (
+        <div className="flex gap-2 overflow-x-auto" style={{ scrollbarWidth: 'thin' }}>
+          {results.map((result, index) => (
+            <SearchResultCard key={`${index}-${result.link}`} index={index} result={result} />
+          ))}
+        </div>
+      ) : (
+        <Text size="sm" c="chatbox-tertiary">
+          {t('Search unsuccessful')}
+        </Text>
+      )}
+    </Stack>
+  )
+}
+
+const TimelineToolCallDetail: FC<{ part: MessageToolCallPart } & ToolCallActionContext> = ({
+  part,
+  sessionId,
+  messageId,
+}) => {
+  if (part.state === 'paused') {
+    return <PausedToolCallDetails part={part} sessionId={sessionId} messageId={messageId} />
+  }
+  if (part.toolName === 'web_search') {
+    return <WebSearchDetails part={part} />
+  }
+  if (part.toolName === 'parse_link') {
+    return <ParseLinkDetails part={part} />
+  }
+  return <GeneralToolCallDetails part={part} />
+}
+
+// Shared timeline rail: the connecting line(s) plus the round status node.
+// Used by both tool-call steps and reasoning steps so they line up on one thread.
+const TimelineRail: FC<{
+  isFirst: boolean
+  isLast: boolean
+  icon: React.ElementType
+  dotBg: string
+  stateColor: string
+}> = ({ isFirst, isLast, icon, dotBg, stateColor }) => (
+  <>
+    {!isFirst && (
+      <Box
+        style={{
+          position: 'absolute',
+          left: TIMELINE_NODE_SIZE / 2 - 1,
+          top: -TIMELINE_STACK_GAP,
+          height: TIMELINE_STACK_GAP + TIMELINE_NODE_TOP,
+          width: 2,
+          borderRadius: 1,
+          backgroundColor: 'color-mix(in srgb, var(--chatbox-border-primary) 70%, transparent)',
+        }}
+      />
+    )}
+    {!isLast && (
+      <Box
+        style={{
+          position: 'absolute',
+          left: TIMELINE_NODE_SIZE / 2 - 1,
+          top: TIMELINE_NODE_TOP + TIMELINE_NODE_SIZE,
+          bottom: -TIMELINE_STACK_GAP,
+          width: 2,
+          borderRadius: 1,
+          backgroundColor: 'color-mix(in srgb, var(--chatbox-border-primary) 70%, transparent)',
+        }}
+      />
+    )}
+    <Box
+      style={{
+        position: 'absolute',
+        left: 0,
+        top: TIMELINE_NODE_TOP,
+        width: TIMELINE_NODE_SIZE,
+        height: TIMELINE_NODE_SIZE,
+        borderRadius: 999,
+        backgroundColor: dotBg,
+        color: stateColor,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        zIndex: 1,
+      }}
+    >
+      <InlineToolIcon icon={icon} size={14} />
+    </Box>
+  </>
+)
+
+const TimelineToolCallStep: FC<
+  {
+    part: MessageToolCallPart
+    isFirst: boolean
+    isLast: boolean
+    showPausedActionDetails?: boolean
+  } & ToolCallActionContext
+> = ({ part, isFirst, isLast, sessionId, messageId, showPausedActionDetails = true }) => {
+  const { t } = useTranslation()
+  const acceptedImageTask = getAcceptedImageBackgroundTaskResult(part.result)
+  const { data: imageRecord } = useImageGenerationRecord(acceptedImageTask?.recordId ?? null)
+  const currentGeneratingId = useCurrentGeneratingId()
+  const imageStatus = imageRecord?.status ?? acceptedImageTask?.status
+  const isBackgroundWaiting = imageStatus === 'pending' || imageStatus === 'generating'
+  const isBackgroundActive =
+    Boolean(acceptedImageTask) && isBackgroundWaiting && currentGeneratingId === acceptedImageTask?.recordId
+  const isBackgroundInterrupted = Boolean(acceptedImageTask) && isBackgroundWaiting && !isBackgroundActive
+  const backgroundElapsed = useThinkingTimer(imageRecord?.createdAt ?? acceptedImageTask?.startedAt, isBackgroundActive)
+  const isPaused = part.state === 'paused'
+  const isLoading = part.state === 'call' || isBackgroundActive
+  const isBashNotAvailable = isBashNotAvailableResult(part)
+  const isError = part.state === 'error' || isBashNotAvailable || imageStatus === 'error'
+  const isDone = part.state === 'result' && !isBashNotAvailable && !isBackgroundWaiting && imageStatus !== 'error'
+  const [expanded, setExpanded] = useAutoExpandOnSignal(isPaused || isBashNotAvailable)
+  const Icon = getToolIcon(part.toolName)
+
+  // Per-step elapsed time: prefer the persisted duration, fall back to a live
+  // timer while the call is still running. Hidden below the 2s threshold.
+  const liveElapsed = useThinkingTimer(part.startTime, isLoading)
+  const stepDuration = acceptedImageTask
+    ? isBackgroundActive
+      ? backgroundElapsed
+      : 0
+    : part.duration && part.duration > 0
+      ? part.duration
+      : isLoading
+        ? liveElapsed
+        : 0
+  const showTime = stepDuration >= MIN_STEP_DURATION_MS
+
+  const stateColor =
+    isPaused || isBackgroundInterrupted
+      ? 'var(--chatbox-tint-warning)'
+      : isLoading
+        ? 'var(--chatbox-tint-brand)'
+        : isError
+          ? 'var(--chatbox-tint-error)'
+          : 'var(--chatbox-tint-success)'
+  const dotBg =
+    isPaused || isBackgroundInterrupted
+      ? 'color-mix(in srgb, var(--chatbox-tint-warning) 12%, transparent)'
+      : isLoading
+        ? 'var(--chatbox-background-brand-secondary)'
+        : isError
+          ? 'color-mix(in srgb, var(--chatbox-tint-error) 10%, transparent)'
+          : 'color-mix(in srgb, var(--chatbox-tint-success) 10%, transparent)'
+
+  const argSummary =
+    part.toolName === 'user_exec'
+      ? getFirstStringValue(part.args, ['command'])
+      : part.toolName === 'create_download'
+        ? getFirstStringValue(part.result, ['file_path']) || getFirstStringValue(part.args, ['file_path'])
+        : part.toolName === 'parse_link'
+          ? getFirstStringValue(part.args, ['url']) || getFirstStringValue(part.result, ['title', 'url'])
+          : getFirstStringValue(part.args, ['path', 'file_path', 'query', 'pattern', 'command', 'skillName', 'name'])
+
+  const resultSummary =
+    !argSummary && part.state === 'result'
+      ? getFirstStringValue(part.result, ['summary', 'title', 'content', 'stdout', 'stderr'])
+      : undefined
+
+  const summary = acceptedImageTask
+    ? isBackgroundActive
+      ? acceptedImageTask.wait.pollIntervalMs
+        ? `${t('Generating image')} · ${t('Checking every {{time}}', {
+            time: formatElapsedTime(acceptedImageTask.wait.pollIntervalMs),
+          })}`
+        : t('Generating image')
+      : isBackgroundInterrupted
+        ? t('Waiting to resume image generation')
+        : imageStatus === 'error'
+          ? t('Image generation failed')
+          : t('Image generated')
+    : isPaused
+      ? t('Paused')
+      : isLoading
+        ? t('Running')
+        : isBashNotAvailable
+          ? t('Bash is not available on this Windows device.')
+          : isError
+            ? t('Failed')
+            : truncateSummary(argSummary || resultSummary || t('Completed'))
+
+  const hasDetail = isPaused ? showPausedActionDetails : part.state !== 'call'
+
+  return (
+    <Box pos="relative" pl={32} style={{ minHeight: 28, overflow: 'visible' }}>
+      <TimelineRail isFirst={isFirst} isLast={isLast} icon={Icon} dotBg={dotBg} stateColor={stateColor} />
+      <UnstyledButton
+        onClick={hasDetail ? () => setExpanded((prev) => !prev) : undefined}
+        style={{
+          cursor: hasDetail ? 'pointer' : 'default',
+          maxWidth: '100%',
+          display: 'block',
+        }}
+      >
+        <Group
+          gap={8}
+          wrap="nowrap"
+          align="center"
+          style={{ height: TIMELINE_NODE_CENTER * 2, maxWidth: '100%', transform: 'translateY(-1px)' }}
+        >
+          <Text size="sm" fw={500} c={isError ? 'chatbox-error' : 'chatbox-primary'} lh="20px" className="shrink-0">
+            {getToolName(part.toolName, part.args)}
+          </Text>
+          {summary && (
+            <Text size="xs" c="chatbox-tertiary" lh="20px" truncate="end" style={{ minWidth: 0 }}>
+              · {summary}
+            </Text>
+          )}
+          {isLoading ? (
+            <ToolCallRunningDots />
+          ) : isError ? (
+            <InlineToolIcon icon={IconCircleXFilled} size={13} color="var(--chatbox-tint-error)" />
+          ) : isDone ? (
+            <InlineToolIcon icon={IconCheck} size={13} color="var(--chatbox-tint-success)" />
+          ) : null}
+          {showTime && (
+            <Text size="xs" c="chatbox-tertiary" lh="20px" className="shrink-0 tabular-nums">
+              {formatElapsedTime(stepDuration)}
+            </Text>
+          )}
+          {hasDetail && (
+            <InlineToolIcon
+              icon={IconChevronDown}
+              size={13}
+              color="var(--chatbox-tertiary)"
+              className={clsx('transition-transform', expanded ? 'rotate-180' : '')}
+            />
+          )}
+        </Group>
+      </UnstyledButton>
+      <ImageGenerationResultGallery images={imageRecord?.generatedImages ?? []} />
+      <Collapse in={expanded && hasDetail}>
+        <Box
+          mt={6}
+          mb={2}
+          p={10}
+          style={{
+            borderRadius: 'var(--mantine-radius-md)',
+            backgroundColor: 'color-mix(in srgb, var(--chatbox-background-gray-secondary) 72%, transparent)',
+            color: 'var(--chatbox-tint-secondary)',
+          }}
+        >
+          <TimelineToolCallDetail part={part} sessionId={sessionId} messageId={messageId} />
+        </Box>
+      </Collapse>
+    </Box>
+  )
+}
+
+// A timeline step is a tool call, a reasoning ("thinking") block, or an
+// intermediate text block the assistant emitted between steps.
+export type StepTimelinePart = MessageToolCallPart | MessageReasoningPart | MessageTextPart
+
+type CopyReasoningHandler = (content: string) => (e: React.MouseEvent<HTMLButtonElement>) => void
+
+// Renders an intermediate assistant text block as a timeline node. Markdown
+// rendering is delegated to the caller (Message owns the settings/uniqueId).
+type RenderStepText = (part: MessageTextPart, index: number) => ReactNode
+
+// tool_call_limit pauses freeze a whole parallel batch, but the Continue/Stop affordance
+// should render once per batch — on the batch's first paused part (parts without a
+// stepIndex each count as their own batch).
+function makeShouldShowPausedActions(parts: StepTimelinePart[]): (part: MessageToolCallPart) => boolean {
+  const actionIds = new Set<string>()
+  const seenStepIndexes = new Set<number>()
+
+  for (const part of parts) {
+    if (part.type !== 'tool-call') continue
+    if (part.state !== 'paused' || part.pauseReason?.type !== 'tool_call_limit') continue
+    if (part.stepIndex !== undefined) {
+      if (seenStepIndexes.has(part.stepIndex)) continue
+      seenStepIndexes.add(part.stepIndex)
+    }
+    actionIds.add(part.toolCallId)
+  }
+
+  return (part) =>
+    part.state !== 'paused' || part.pauseReason?.type !== 'tool_call_limit' || actionIds.has(part.toolCallId)
+}
+
+const TimelineTextStep: FC<{ children: ReactNode; isFirst: boolean; isLast: boolean }> = ({
+  children,
+  isFirst,
+  isLast,
+}) => (
+  <Box pos="relative" pl={32} style={{ minHeight: TIMELINE_NODE_CENTER * 2, overflow: 'visible' }}>
+    <TimelineRail
+      isFirst={isFirst}
+      isLast={isLast}
+      icon={IconMessage}
+      dotBg="var(--chatbox-background-gray-secondary)"
+      stateColor="var(--chatbox-tint-tertiary)"
+    />
+    <Box
+      className="text-sm break-words [overflow-wrap:anywhere] [&_p]:!my-0 [&>*:first-child]:!mt-0 [&>*:last-child]:!mb-0"
+      style={{
+        minHeight: TIMELINE_NODE_CENTER * 2,
+        display: 'flex',
+        flexDirection: 'column',
+        justifyContent: 'center',
+        transform: 'translateY(-1px)',
+      }}
+    >
+      {children}
+    </Box>
+  </Box>
+)
+
+// Shared reasoning display state, kept in sync with how a reasoning block is
+// rendered both standalone (ReasoningContentUI) and inside the step timeline.
+function useReasoningState(message: Message | undefined, part: MessageReasoningPart | undefined) {
+  const reasoningContent = part?.text ?? message?.reasoningContent ?? ''
+  const hasActiveStatus = (message?.status?.length ?? 0) > 0
   const rawIsThinking =
-    (message.generating &&
-      part &&
-      message.contentParts &&
+    (message?.generating &&
+      !!part &&
+      !hasActiveStatus &&
+      !!message?.contentParts &&
       message.contentParts.length > 0 &&
       message.contentParts[message.contentParts.length - 1] === part) ||
     false
@@ -520,13 +1616,188 @@ export const ReasoningContentUI: FC<{
   }
   const isThinking = rawIsThinking && !wasEverDoneRef.current
 
-  const [isExpanded, setIsExpanded] = useState<boolean>(false)
-
   const elapsedTime = useThinkingTimer(part?.startTime, isThinking)
-  const shouldShowTimer = message.isStreamingMode === true
-
   const displayTime =
     part?.duration && part.duration > 0 ? part.duration : isThinking && elapsedTime > 0 ? elapsedTime : 0
+
+  return { reasoningContent, isThinking, displayTime }
+}
+
+const TimelineReasoningStep: FC<{
+  part: MessageReasoningPart
+  message?: Message
+  isFirst: boolean
+  isLast: boolean
+  onCopyReasoningContent?: CopyReasoningHandler
+}> = ({ part, message, isFirst, isLast, onCopyReasoningContent }) => {
+  const { t } = useTranslation()
+  const { reasoningContent, isThinking, displayTime } = useReasoningState(message, part)
+  const [expanded, setExpanded] = useState(false)
+  const shouldShowTimer = message?.isStreamingMode === true
+  const showTime = shouldShowTimer && displayTime >= MIN_STEP_DURATION_MS
+  const hasDetail = reasoningContent.length > 0
+
+  const stateColor = isThinking ? 'var(--chatbox-tint-brand)' : 'var(--chatbox-tint-warning)'
+  const dotBg = isThinking
+    ? 'var(--chatbox-background-brand-secondary)'
+    : 'color-mix(in srgb, var(--chatbox-tint-warning) 12%, transparent)'
+
+  const label = isThinking
+    ? t('Thinking')
+    : showTime
+      ? t('Thought for {{time}}', { time: formatElapsedTime(displayTime) })
+      : t('Deeply thought')
+
+  return (
+    <Box pos="relative" pl={32} style={{ minHeight: 28, overflow: 'visible' }}>
+      <TimelineRail isFirst={isFirst} isLast={isLast} icon={IconBulb} dotBg={dotBg} stateColor={stateColor} />
+      <UnstyledButton
+        onClick={hasDetail ? () => setExpanded((prev) => !prev) : undefined}
+        style={{ cursor: hasDetail ? 'pointer' : 'default', maxWidth: '100%', display: 'block' }}
+      >
+        <Group
+          gap={8}
+          wrap="nowrap"
+          align="center"
+          style={{ height: TIMELINE_NODE_CENTER * 2, maxWidth: '100%', transform: 'translateY(-1px)' }}
+        >
+          <Text
+            size="sm"
+            fw={500}
+            c="chatbox-secondary"
+            lh="20px"
+            fs={isThinking ? 'italic' : undefined}
+            className="shrink-0"
+          >
+            {label}
+          </Text>
+          {isThinking && <ToolCallRunningDots />}
+          {expanded && hasDetail && onCopyReasoningContent && (
+            <ActionIcon
+              variant="subtle"
+              size="xs"
+              c="chatbox-gray"
+              onClick={(e) => {
+                e.stopPropagation()
+                onCopyReasoningContent(reasoningContent)(e)
+              }}
+              aria-label={t('Copy reasoning content')}
+            >
+              <ScalableIcon icon={IconCopy} size={12} />
+            </ActionIcon>
+          )}
+          {hasDetail && (
+            <InlineToolIcon
+              icon={IconChevronDown}
+              size={13}
+              color="var(--chatbox-tertiary)"
+              className={clsx('transition-transform', expanded ? 'rotate-180' : '')}
+            />
+          )}
+        </Group>
+      </UnstyledButton>
+      <Collapse in={expanded && hasDetail}>
+        <Box
+          mt={6}
+          mb={2}
+          pl="sm"
+          style={{
+            borderLeft: '2px solid var(--chatbox-tint-warning)',
+            maxHeight: 400,
+            overflowY: 'auto',
+          }}
+        >
+          <Text size="sm" c="chatbox-tertiary" style={{ whiteSpace: 'pre-line', lineHeight: 1.5 }}>
+            {reasoningContent}
+          </Text>
+        </Box>
+      </Collapse>
+    </Box>
+  )
+}
+
+// Unified timeline that threads consecutive reasoning + tool-call steps together
+// with a single connecting line so an agent run reads as one coherent sequence.
+export const StepTimelineUI: FC<
+  {
+    parts: StepTimelinePart[]
+    message?: Message
+    onCopyReasoningContent?: CopyReasoningHandler
+    renderText?: RenderStepText
+  } & ToolCallActionContext
+> = ({ parts, message, sessionId, messageId, onCopyReasoningContent, renderText }) => {
+  const shouldShowPausedActions = makeShouldShowPausedActions(parts)
+
+  return (
+    <Box pos="relative" my={8} mb={12}>
+      <Stack gap={TIMELINE_STACK_GAP}>
+        {parts.map((part, index) => {
+          const isFirst = index === 0
+          const isLast = index === parts.length - 1
+          if (part.type === 'reasoning') {
+            return (
+              <TimelineReasoningStep
+                key={`reasoning-${index}`}
+                part={part}
+                message={message}
+                isFirst={isFirst}
+                isLast={isLast}
+                onCopyReasoningContent={onCopyReasoningContent}
+              />
+            )
+          }
+          if (part.type === 'text') {
+            return (
+              <TimelineTextStep key={`text-${index}`} isFirst={isFirst} isLast={isLast}>
+                {renderText ? (
+                  renderText(part, index)
+                ) : (
+                  <Text size="sm" style={{ whiteSpace: 'pre-line' }}>
+                    {part.text}
+                  </Text>
+                )}
+              </TimelineTextStep>
+            )
+          }
+          return (
+            <TimelineToolCallStep
+              key={part.toolCallId}
+              part={part}
+              isFirst={isFirst}
+              isLast={isLast}
+              sessionId={sessionId}
+              messageId={messageId}
+              showPausedActionDetails={shouldShowPausedActions(part)}
+            />
+          )
+        })}
+      </Stack>
+    </Box>
+  )
+}
+
+// Backwards-compatible wrapper for tool-call-only timelines (e.g. a single
+// paused tool call rendered outside a step group).
+export const ToolCallGroupUI: FC<{ parts: MessageToolCallPart[] } & ToolCallActionContext> = ({
+  parts,
+  sessionId,
+  messageId,
+}) => <StepTimelineUI parts={parts} sessionId={sessionId} messageId={messageId} />
+
+// ─── Reasoning / Thinking (Minimal Inline) ──────────────────────────
+
+export const ReasoningContentUI: FC<{
+  message: Message
+  part?: MessageReasoningPart
+  onCopyReasoningContent: (content: string) => (e: React.MouseEvent<HTMLButtonElement>) => void
+}> = ({ message, part, onCopyReasoningContent }) => {
+  const { t } = useTranslation()
+  const { reasoningContent, isThinking, displayTime } = useReasoningState(message, part)
+
+  const [isExpanded, setIsExpanded] = useState<boolean>(false)
+
+  const shouldShowTimer = message.isStreamingMode === true
+  const showTime = shouldShowTimer && displayTime >= MIN_STEP_DURATION_MS
 
   const toggleExpanded = useCallback(() => {
     setIsExpanded((prev) => !prev)
@@ -583,7 +1854,7 @@ export const ReasoningContentUI: FC<{
             />
             <Text size="sm" c="chatbox-tertiary" fs="italic">
               {t('Thinking')}
-              {shouldShowTimer && displayTime > 0 ? ` · ${formatElapsedTime(displayTime)}` : '...'}
+              {showTime ? ` · ${formatElapsedTime(displayTime)}` : '...'}
             </Text>
             {copyButton}
           </Group>
@@ -599,9 +1870,7 @@ export const ReasoningContentUI: FC<{
         <Group gap={6}>
           <ScalableIcon icon={IconBulb} size={14} color="var(--chatbox-tint-warning)" />
           <Text size="sm" fw={600} c="chatbox-secondary" td="underline">
-            {shouldShowTimer && displayTime > 0
-              ? t('Thought for {{time}}', { time: formatElapsedTime(displayTime) })
-              : t('Deeply thought')}
+            {showTime ? t('Thought for {{time}}', { time: formatElapsedTime(displayTime) }) : t('Deeply thought')}
           </Text>
           {copyButton}
         </Group>

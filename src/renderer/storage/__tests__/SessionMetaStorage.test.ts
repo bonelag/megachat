@@ -15,27 +15,45 @@ function makeRecord(overrides: Partial<SessionMetaRecord> & { id: string }): Ses
 // Use unique DB names to avoid cross-test interference
 let dbCounter = 0
 
+type IndexSet = 'current' | 'legacy'
+
+type IndexedDBSessionMetaStorageInternals = {
+  db: IDBDatabase
+  openDatabase: () => Promise<void>
+}
+
+function createStoreIndexes(store: IDBObjectStore, indexSet: IndexSet) {
+  store.createIndex('sortOrder', 'sortOrder', { unique: false })
+  store.createIndex('createdAt', 'createdAt', { unique: false })
+  if (indexSet === 'current') {
+    store.createIndex('starredSortOrder', ['starred', 'sortOrder'], { unique: false })
+    store.createIndex('archivedAt', 'archivedAt', { unique: false })
+  }
+}
+
+function openTestDatabase(dbName: string, options: { version?: number; indexSet?: IndexSet } = {}) {
+  return new Promise<IDBDatabase>((resolve, reject) => {
+    const request = options.version === undefined ? indexedDB.open(dbName) : indexedDB.open(dbName, options.version)
+    request.onerror = () => reject(request.error)
+    request.onsuccess = () => resolve(request.result)
+    request.onupgradeneeded = (event) => {
+      const db = (event.target as IDBOpenDBRequest).result
+      if (!db.objectStoreNames.contains('records')) {
+        const store = db.createObjectStore('records', { keyPath: 'id' })
+        createStoreIndexes(store, options.indexSet ?? 'current')
+      }
+    }
+  })
+}
+
 // Subclass to inject unique DB names per test
 class TestSessionMetaStorage extends IndexedDBSessionMetaStorage {
-  constructor(dbName: string) {
+  constructor(dbName: string, options: { indexSet?: IndexSet } = {}) {
     super()
     // Override the private DB_NAME by re-implementing openDatabase
-    ;(this as unknown as { openDatabase: () => Promise<void> }).openDatabase = () => {
-      return new Promise((resolve, reject) => {
-        const request = indexedDB.open(dbName, 1)
-        request.onerror = () => reject(request.error)
-        request.onsuccess = () => {
-          ;(this as unknown as { db: IDBDatabase }).db = request.result
-          resolve()
-        }
-        request.onupgradeneeded = (event) => {
-          const db = (event.target as IDBOpenDBRequest).result
-          if (!db.objectStoreNames.contains('records')) {
-            const store = db.createObjectStore('records', { keyPath: 'id' })
-            store.createIndex('sortOrder', 'sortOrder', { unique: false })
-            store.createIndex('createdAt', 'createdAt', { unique: false })
-          }
-        }
+    ;(this as unknown as IndexedDBSessionMetaStorageInternals).openDatabase = async () => {
+      ;(this as unknown as IndexedDBSessionMetaStorageInternals).db = await openTestDatabase(dbName, {
+        indexSet: options.indexSet ?? 'current',
       })
     }
   }
@@ -59,6 +77,37 @@ describe('IndexedDBSessionMetaStorage', () => {
     await storage.initialize()
     const result = await storage.getById('non-existent')
     expect(result).toBeNull()
+  })
+
+  it('creates new databases without upgrading beyond version 1', async () => {
+    await storage.initialize()
+    expect((storage as unknown as IndexedDBSessionMetaStorageInternals).db.version).toBe(1)
+  })
+
+  it('opens already-upgraded databases without requesting a downgrade', async () => {
+    const dbName = `test-db-${++dbCounter}`
+    const upgradedDb = await openTestDatabase(dbName, { version: 2, indexSet: 'current' })
+    upgradedDb.close()
+
+    const upgradedStorage = new TestSessionMetaStorage(dbName)
+    await upgradedStorage.initialize()
+
+    expect((upgradedStorage as unknown as IndexedDBSessionMetaStorageInternals).db.version).toBe(2)
+  })
+
+  it('does not upgrade legacy version 1 databases during initialization', async () => {
+    const dbName = `test-db-${++dbCounter}`
+    const legacyDb = await openTestDatabase(dbName, { version: 1, indexSet: 'legacy' })
+    legacyDb.close()
+
+    const legacyStorage = new TestSessionMetaStorage(dbName)
+    await legacyStorage.initialize()
+
+    const db = (legacyStorage as unknown as IndexedDBSessionMetaStorageInternals).db
+    expect(db.version).toBe(1)
+    const tx = db.transaction('records', 'readonly')
+    const store = tx.objectStore('records')
+    expect(store.indexNames.contains('archivedAt')).toBe(false)
   })
 
   it('update existing record', async () => {
@@ -121,6 +170,58 @@ describe('IndexedDBSessionMetaStorage', () => {
     expect(all[0].id).toBe('visible')
   })
 
+  it('getArchived returns hidden records sorted by sortOrder desc', async () => {
+    await storage.create(makeRecord({ id: 'visible', sortOrder: 300 }))
+    await storage.create(makeRecord({ id: 'hidden-system', sortOrder: 400, hidden: true }))
+    await storage.create(makeRecord({ id: 'hidden-old', sortOrder: 100, hidden: true, archivedAt: 1000 }))
+    await storage.create(makeRecord({ id: 'hidden-new', sortOrder: 200, hidden: true, archivedAt: 2000 }))
+
+    const archived = await storage.getArchived()
+    expect(archived.map((record) => record.id)).toEqual(['hidden-new', 'hidden-old'])
+  })
+
+  it('getAllIncludingHidden returns visible and hidden records', async () => {
+    await storage.create(makeRecord({ id: 'visible', sortOrder: 100 }))
+    await storage.create(makeRecord({ id: 'hidden', sortOrder: 200, hidden: true, archivedAt: 1000 }))
+
+    const all = await storage.getAllIncludingHidden()
+    expect(all.map((record) => record.id)).toEqual(['hidden', 'visible'])
+  })
+
+  it('getArchivedPage returns archived records with cursor pagination', async () => {
+    await storage.create(makeRecord({ id: 'visible', sortOrder: 500 }))
+    await storage.create(makeRecord({ id: 'archived-1', sortOrder: 100, hidden: true, archivedAt: 1000 }))
+    await storage.create(makeRecord({ id: 'archived-2', sortOrder: 200, hidden: true, archivedAt: 2000 }))
+    await storage.create(makeRecord({ id: 'archived-3', sortOrder: 300, hidden: true, archivedAt: 3000 }))
+
+    const firstPage = await storage.getArchivedPage(0, 2)
+    expect(firstPage.items.map((record) => record.id)).toEqual(['archived-3', 'archived-2'])
+    expect(firstPage.nextCursor).toBe(2)
+    expect(firstPage.total).toBe(3)
+
+    expect(firstPage.nextCursor).not.toBeNull()
+    const secondPage = await storage.getArchivedPage(firstPage.nextCursor ?? 0, 2)
+    expect(secondPage.items.map((record) => record.id)).toEqual(['archived-1'])
+    expect(secondPage.nextCursor).toBeNull()
+    expect(secondPage.total).toBe(3)
+  })
+
+  it('getArchivedPage falls back to sorted scans when archivedAt index is missing', async () => {
+    storage = new TestSessionMetaStorage(`test-db-${++dbCounter}`, { indexSet: 'legacy' })
+    await storage.create(makeRecord({ id: 'a-new', sortOrder: 100, hidden: true, archivedAt: 3000 }))
+    await storage.create(makeRecord({ id: 'm-mid', sortOrder: 200, hidden: true, archivedAt: 2000 }))
+    await storage.create(makeRecord({ id: 'z-old', sortOrder: 300, hidden: true, archivedAt: 1000 }))
+
+    const firstPage = await storage.getArchivedPage(0, 2)
+    expect(firstPage.items.map((record) => record.id)).toEqual(['a-new', 'm-mid'])
+    expect(firstPage.nextCursor).toBe(2)
+    expect(firstPage.total).toBe(3)
+
+    const secondPage = await storage.getArchivedPage(firstPage.nextCursor ?? 0, 2)
+    expect(secondPage.items.map((record) => record.id)).toEqual(['z-old'])
+    expect(secondPage.nextCursor).toBeNull()
+  })
+
   it('createMany batch inserts', async () => {
     const records = [
       makeRecord({ id: 'a', sortOrder: 100 }),
@@ -143,10 +244,23 @@ describe('IndexedDBSessionMetaStorage', () => {
     expect(await storage.getTotal()).toBe(0)
   })
 
-  it('getTotal counts all records including hidden', async () => {
+  it('getTotal counts visible records only', async () => {
     await storage.create(makeRecord({ id: 'a', sortOrder: 100 }))
     await storage.create(makeRecord({ id: 'b', sortOrder: 200, hidden: true }))
-    expect(await storage.getTotal()).toBe(2)
+    expect(await storage.getTotal()).toBe(1)
+  })
+
+  it('getAllTotal counts visible and hidden records', async () => {
+    await storage.create(makeRecord({ id: 'a', sortOrder: 100 }))
+    await storage.create(makeRecord({ id: 'b', sortOrder: 200, hidden: true }))
+    expect(await storage.getAllTotal()).toBe(2)
+  })
+
+  it('getArchivedTotal counts archived records only', async () => {
+    await storage.create(makeRecord({ id: 'a', sortOrder: 100 }))
+    await storage.create(makeRecord({ id: 'b', sortOrder: 200, hidden: true }))
+    await storage.create(makeRecord({ id: 'c', sortOrder: 300, hidden: true, archivedAt: 1000 }))
+    expect(await storage.getArchivedTotal()).toBe(1)
   })
 
   describe('getPage', () => {
@@ -207,6 +321,8 @@ describe('IndexedDBSessionMetaStorage', () => {
     expect(await storage.getTotal()).toBe(2)
     await storage.clear()
     expect(await storage.getTotal()).toBe(0)
+    expect(await storage.getAllTotal()).toBe(0)
+    expect(await storage.getArchivedTotal()).toBe(0)
     expect(await storage.getAll()).toEqual([])
   })
 })

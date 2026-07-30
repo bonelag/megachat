@@ -1,7 +1,6 @@
 import type { SessionAttachmentQueryPlan } from '@shared/types'
 import { embedMany } from 'ai'
 import { ipcMain } from 'electron'
-import { isSessionAttachmentRagSupportedFilePath } from '../../shared/file-extensions'
 import { rerank } from '../../shared/models/rerank'
 import { SESSION_ATTACHMENT_RAG_LOG_PREFIX } from '../../shared/session-attachment-rag/logging'
 import { sentry } from '../adapters/sentry'
@@ -66,10 +65,6 @@ function normalizeQueryPlan(plan?: SessionAttachmentQueryPlan) {
 
 export function registerSessionAttachmentRagHandlers() {
   ipcMain.handle('session-attachment-rag:create', async (_event, params) => {
-    if (!isSessionAttachmentRagSupportedFilePath(params.filename)) {
-      throw new Error('session_attachment_rag_unsupported_file_type')
-    }
-
     log.debug(
       `${SESSION_ATTACHMENT_RAG_LOG_PREFIX} [IPC] Create attachment task: session=${params.sessionId}, message=${params.messageId}, file="${params.filename}", parser=${params.parserType ?? 'unknown'}`
     )

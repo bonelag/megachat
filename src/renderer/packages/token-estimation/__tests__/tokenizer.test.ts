@@ -56,10 +56,17 @@ describe('estimateDeepSeekTokens', () => {
   })
 
   it('estimates English characters at ~0.3 tokens each', () => {
-    const text = 'Hello'
-    const tokens = estimateDeepSeekTokens(text)
-    expect(tokens).toBeGreaterThan(0)
-    expect(tokens).toBeLessThanOrEqual(5)
+    // 'Hello' = 5 ASCII letters × 0.3 = 1.5 → 2. Under the old astral-range regex bug
+    // (no `u` flag) these matched the CJK branch and were counted at 0.6 → 3.
+    expect(estimateDeepSeekTokens('Hello')).toBe(2)
+  })
+
+  it('does not count ASCII letters/digits as Chinese (astral-regex regression)', () => {
+    // 10 ASCII letters: 0.3 each → ceil(3.0) = 3. The pre-fix regex scored them at
+    // 0.6 each → ceil(6.0) = 6, roughly doubling estimates for English text.
+    expect(estimateDeepSeekTokens('javascript')).toBe(3)
+    // A real CJK char must still score 0.6.
+    expect(estimateDeepSeekTokens('中')).toBe(1)
   })
 
   it('estimates special characters at ~0.3 tokens each', () => {

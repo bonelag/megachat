@@ -12,6 +12,7 @@ import { cn } from '@/lib/utils'
 import type { UserLicense } from '@/packages/remote'
 import type { GuideToolPart, GuideUIMessage, UserType } from '../-hooks/useGuideSession'
 import {
+  AutoNewChatLoading,
   FreeTrialLink,
   LoginButton,
   NewChatButton,
@@ -68,6 +69,14 @@ function ToolPartRenderer({
     case 'show_new_chat_button': {
       const label = typeof part.result?.label === 'string' ? part.result.label : undefined
       return <NewChatButton label={label} />
+    }
+
+    case 'show_auto_new_chat_loading': {
+      return (
+        <AutoNewChatLoading
+          waitForWindowFocusBeforeAutoNavigate={part.result?.waitForWindowFocusBeforeAutoNavigate === true}
+        />
+      )
     }
 
     case 'show_new_chat_tip':
@@ -154,7 +163,7 @@ export function GuideMessage({
                         {part.text}
                       </p>
                     ) : (
-                      <Markdown key={key} generating={isStreaming}>
+                      <Markdown key={key} uniqueId={key} generating={isStreaming}>
                         {part.text}
                       </Markdown>
                     )

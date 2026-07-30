@@ -271,11 +271,7 @@ export default defineConfig(({ mode }) => {
                 if (isNodeModulePackage('@mantine') || isNodeModulePackage('@tabler')) {
                   return 'vendor-ui'
                 }
-                if (
-                  isNodeModulePackage('mermaid') ||
-                  isNodeModulePackage('d3') ||
-                  /\/node_modules\/d3-[^/]+\//.test(normalizedId)
-                ) {
+                if (isNodeModulePackage('d3') || /\/node_modules\/d3-[^/]+\//.test(normalizedId)) {
                   return 'vendor-charts'
                 }
               }
@@ -291,6 +287,12 @@ export default defineConfig(({ mode }) => {
       },
       server: {
         port: Number(process.env.DEV_PORT) || 1212,
+        watch: {
+          // The root .env is a 1Password-managed FIFO in local development. Vite
+          // treats env file changes as a full server restart, which can interrupt
+          // dependency scanning during startup and print noisy dep-scan failures.
+          ignored: ['**/.env', '**/.env.*'],
+        },
       },
       define: {
         'process.type': '"renderer"',

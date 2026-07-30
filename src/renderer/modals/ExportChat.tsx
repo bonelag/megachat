@@ -1,5 +1,5 @@
 import NiceModal, { useModal } from '@ebay/nice-modal-react'
-import { Button, Select, Stack, Text } from '@mantine/core'
+import { Button, Stack, Text } from '@mantine/core'
 import type { ExportChatFormat, ExportChatScope } from '@shared/types'
 import { useAtomValue } from 'jotai'
 import { useState } from 'react'

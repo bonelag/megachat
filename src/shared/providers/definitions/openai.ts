@@ -136,7 +136,6 @@ export const openaiProvider = defineProvider({
           customFetch: oauthFetch,
           listModelsFallback: config.providerSetting.models || openaiProvider.defaultSettings?.models,
           skipRemoteModelList: true,
-          forceStatelessResponses: true,
         },
         config.dependencies
       )

@@ -1,5 +1,6 @@
+import { searchNativeWeb } from '@shared/services/native-web-search'
 import type { SearchResult } from '@shared/types'
-import { webBrowsing } from '@/packages/remote'
+import { getChatboxWebSearchRequestOptions } from '@/packages/remote'
 import WebSearch from './base'
 
 export class ChatboxSearch extends WebSearch {
@@ -16,24 +17,19 @@ export class ChatboxSearch extends WebSearch {
     this.licenseKey = licenseKey
   }
 
-  async search(query: string): Promise<SearchResult> {
-    if (this.licenseKey) {
-      const res = await webBrowsing({
-        licenseKey: this.licenseKey,
-        query,
-      })
-
-      return {
-        items: res.links.map((link) => ({
-          title: link.title,
-          link: link.url,
-          snippet: link.content,
-        })),
-      }
-    } else {
-      return {
-        items: [],
-      }
+  async search(query: string, signal?: AbortSignal): Promise<SearchResult> {
+    if (!this.licenseKey) {
+      return { items: [] }
     }
+    // Single implementation shared with the native shell. The request seam injects an
+    // afetch fetchFn (retry + Chatbox error parsing) plus the Chatbox platform headers,
+    // preserving the behavior of the old `webBrowsing` remote call.
+    const items = await searchNativeWeb(query, {
+      provider: 'build-in',
+      licenseKey: this.licenseKey,
+      signal,
+      ...(await getChatboxWebSearchRequestOptions()),
+    })
+    return { items }
   }
 }

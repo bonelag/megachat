@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 const getLicenseKeyMock = vi.fn()
 const getExtensionSettingsMock = vi.fn()
 const parseUserLinkProMock = vi.fn()
+const parseUserLinkFreeMock = vi.fn()
 const getStoreBlobMock = vi.fn()
 const getParseLinkProviderMock = vi.fn()
 const webSearchExecutorMock = vi.fn()
@@ -15,6 +16,7 @@ vi.mock('@/stores/settingActions', () => ({
 
 vi.mock('@/packages/remote', () => ({
   parseUserLinkPro: (...args: unknown[]) => parseUserLinkProMock(...args),
+  parseUserLinkFree: (...args: unknown[]) => parseUserLinkFreeMock(...args),
 }))
 
 vi.mock('@/platform', () => ({
@@ -29,12 +31,15 @@ vi.mock('@/packages/web-search', () => ({
 }))
 
 // Import after mocks are registered
-import { parseLinkTool } from '@/packages/model-calls/toolsets/web-search'
+import { parseLinkTool, webSearchTool } from '@/packages/model-calls/toolsets/web-search'
 
 type ParseLinkInput = { url: string; maxLength?: number }
 
 type ParseLinkToolLike = {
-  execute: (input: ParseLinkInput, context: { abortSignal?: AbortSignal }) => Promise<{
+  execute: (
+    input: ParseLinkInput,
+    context: { abortSignal?: AbortSignal }
+  ) => Promise<{
     url: string
     title: string
     content: string
@@ -48,11 +53,32 @@ async function execParseLink(input: ParseLinkInput, abortSignal?: AbortSignal) {
   return await (parseLinkTool as unknown as ParseLinkToolLike).execute(input, { abortSignal })
 }
 
+async function toModelOutput(tool: unknown, output: unknown) {
+  const mapper = tool as {
+    toModelOutput: (options: { toolCallId: string; input: unknown; output: unknown }) => Promise<unknown> | unknown
+  }
+  return await mapper.toModelOutput({ toolCallId: 'tool-call-id', input: {}, output })
+}
+
+describe('webSearchTool', () => {
+  it('maps search results to readable model text', async () => {
+    await expect(
+      toModelOutput(webSearchTool, {
+        searchResults: [{ title: 'Result title', snippet: 'Short summary.', link: 'https://example.com/result' }],
+      })
+    ).resolves.toEqual({
+      type: 'text',
+      value: 'Result 1\nTitle: Result title\nURL: https://example.com/result\nSnippet:\nShort summary.',
+    })
+  })
+})
+
 describe('parseLinkTool', () => {
   beforeEach(() => {
     getLicenseKeyMock.mockReset()
     getExtensionSettingsMock.mockReset()
     parseUserLinkProMock.mockReset()
+    parseUserLinkFreeMock.mockReset()
     getStoreBlobMock.mockReset()
     getParseLinkProviderMock.mockReset()
   })
@@ -61,18 +87,39 @@ describe('parseLinkTool', () => {
     vi.clearAllMocks()
   })
 
+  it('maps parsed page content to readable model text', async () => {
+    await expect(
+      toModelOutput(parseLinkTool, {
+        url: 'https://example.com',
+        title: 'Example title',
+        content: 'Readable page body.',
+        originalLength: 19,
+        truncated: false,
+      })
+    ).resolves.toEqual({
+      type: 'text',
+      value: 'Title: Example title\nURL: https://example.com\nContent:\nReadable page body.',
+    })
+  })
+
   describe('build-in (Chatbox AI) provider', () => {
     beforeEach(() => {
       getExtensionSettingsMock.mockReturnValue({ webSearch: { provider: 'build-in' } })
     })
 
-    it('throws license key required when no license is configured', async () => {
+    it('falls back to the free parser when no license is configured', async () => {
       getLicenseKeyMock.mockReturnValue('')
+      parseUserLinkFreeMock.mockResolvedValue({ title: 'Free Title', text: 'Free content.' })
 
-      await expect(execParseLink({ url: 'https://example.com' })).rejects.toMatchObject({
-        detail: { name: 'chatbox_search_license_key_required' },
-      })
+      const result = await execParseLink({ url: 'https://example.com' })
+
       expect(parseUserLinkProMock).not.toHaveBeenCalled()
+      expect(parseUserLinkFreeMock).toHaveBeenCalledWith({ url: 'https://example.com' })
+      expect(result).toMatchObject({
+        url: 'https://example.com',
+        title: 'Free Title',
+        content: 'Free content.',
+      })
       expect(getParseLinkProviderMock).not.toHaveBeenCalled()
     })
 

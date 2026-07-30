@@ -12,7 +12,7 @@ export function RouteComponent() {
 
   return (
     <Box p="md">
-      <Title order={5}>{t('Skills')}</Title>
+      <Title order={5}>Skills</Title>
       <Text size="sm" c="dimmed" mt="xs">
         {t('Enabled skills will be available in Task mode.')}
       </Text>

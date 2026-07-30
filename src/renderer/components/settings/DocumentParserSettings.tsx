@@ -10,9 +10,7 @@ const ALL_PARSER_OPTIONS: {
   value: DocumentParserType
   label: string
   desktopOnly?: boolean
-  mobileWebOnly?: boolean
 }[] = [
-  { value: 'none', label: 'Text Only', mobileWebOnly: true }, // Basic text file support only (mobile/web only)
   { value: 'local', label: 'Local', desktopOnly: true }, // Only available on desktop
   { value: 'chatbox-ai', label: 'Chatbox AI' },
   { value: 'mineru', label: 'MinerU', desktopOnly: true }, // Only available on desktop (requires IPC)
@@ -23,7 +21,7 @@ const PARSER_DESCRIPTIONS: Record<DocumentParserType, string> = {
   local:
     'Uses built-in document parsing feature, supports common file types. Free usage, no compute points will be consumed.',
   'chatbox-ai':
-    'Cloud-based document parsing service, supports PDF, Office files, EPUB and many other file types. Consumes compute points.',
+    'Tries local parsing first without consuming compute points. If local parsing fails, Chatbox AI cloud parsing will be used and compute points will be consumed.',
   mineru: 'Third-party cloud parsing service, supports PDF and most Office files. Requires API token.',
 }
 
@@ -47,12 +45,12 @@ export function DocumentParserSettings({ showTitle = true }: DocumentParserSetti
     const isDesktop = platform.type === 'desktop'
     return ALL_PARSER_OPTIONS.filter((opt) => {
       if (opt.desktopOnly && !isDesktop) return false
-      if (opt.mobileWebOnly && isDesktop) return false
       return true
     })
   }, [])
 
-  const currentParserType = documentParser?.type || getPlatformDefaultDocumentParser().type
+  const storedParserType = documentParser?.type || getPlatformDefaultDocumentParser().type
+  const currentParserType = storedParserType === 'none' ? getPlatformDefaultDocumentParser().type : storedParserType
 
   const handleParserTypeChange = useCallback(
     (value: string | null) => {

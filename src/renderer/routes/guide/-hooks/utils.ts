@@ -95,6 +95,28 @@ export function createNewChatButtonToolPart(toolCallId: string, options?: { labe
     toolCallId,
     toolName: 'show_new_chat_button',
     state: 'result',
-    result: { displayed: true, ...(options?.label ? { label: options.label } : {}) },
+    result: {
+      displayed: true,
+      ...(options?.label ? { label: options.label } : {}),
+    },
+  }
+}
+
+/**
+ * Create a tool part for rendering the automatic transition into a normal chat.
+ */
+export function createAutoNewChatLoadingToolPart(
+  toolCallId: string,
+  options?: { waitForWindowFocusBeforeAutoNavigate?: boolean }
+): GuideToolPart {
+  return {
+    type: 'tool-show_auto_new_chat_loading',
+    toolCallId,
+    toolName: 'show_auto_new_chat_loading',
+    state: 'result',
+    result: {
+      displayed: true,
+      ...(options?.waitForWindowFocusBeforeAutoNavigate ? { waitForWindowFocusBeforeAutoNavigate: true } : {}),
+    },
   }
 }

@@ -1,4 +1,4 @@
-import { PROVIDER_ID_MAP, REVERSE_PROVIDER_MAP } from './provider-mapping'
+import { REVERSE_PROVIDER_MAP } from './provider-mapping'
 import type {
   ModelMetadata,
   ModelRegistryData,
@@ -6,6 +6,11 @@ import type {
   ModelsDevResponse,
   ProviderModelRegistry,
 } from './types'
+
+// models.dev currently marks GPT-5 chat-tuned variants as reasoning models, but their
+// chat-completions endpoints reject reasoning_effort. Keep the source correction here so
+// generated snapshots and live enrichment apply the same override.
+const GPT_NON_REASONING_CHAT_MODEL = /(?:^|\/)gpt-5[\w.-]*[.-]chat(?:[.-]|$)/i
 
 /**
  * Transform a single models.dev model entry into our internal ModelMetadata format.
@@ -16,7 +21,7 @@ export function transformModelEntry(entry: ModelsDevModelEntry): ModelMetadata {
   if (entry.tool_call) {
     capabilities.push('tool_use')
   }
-  if (entry.reasoning) {
+  if (entry.reasoning && !GPT_NON_REASONING_CHAT_MODEL.test(entry.id)) {
     capabilities.push('reasoning')
   }
   if (entry.modalities?.input?.some((m) => ['image', 'video'].includes(m))) {

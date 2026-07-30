@@ -90,7 +90,10 @@ export async function needsCompaction(sessionId: string): Promise<boolean> {
   const cachedResult = queryClient.getQueryData<ContextTokensCacheValue>(cacheKey)
   if (!cachedResult) {
     // L2 cache miss: Use L1 cache aggregation (do NOT trigger calculation tasks)
-    const estimatedTokens = sumCachedTokensFromMessages(contextMessages)
+    // In sandbox mode (files + tool-use model), only file metadata is sent, not content
+    const hasFiles = contextMessages.some((m) => m.files?.length)
+    const sandboxMode = hasFiles // conservative: assume sandbox when files exist
+    const estimatedTokens = sumCachedTokensFromMessages(contextMessages, undefined, sandboxMode)
     queryClient.setQueryData(cacheKey, {
       contextTokens: estimatedTokens,
       messageCount: contextMessages.length,

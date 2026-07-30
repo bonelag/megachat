@@ -193,7 +193,10 @@ export function parseSQLiteTimestamp(sqliteTimestamp: string): number {
 }
 
 // Transaction wrapper - ensures atomicity of database operations
-export async function withTransaction<T>(operation: () => Promise<T>): Promise<T> {
+export async function withTransaction<T>(
+  operation: () => Promise<T>,
+  options?: { shouldReportError?: (error: unknown) => boolean }
+): Promise<T> {
   const db = getDatabase()
   const transactionId = Math.random().toString(36).slice(2, 10)
 
@@ -221,12 +224,14 @@ export async function withTransaction<T>(operation: () => Promise<T>): Promise<T
     }
 
     // Report transaction failures to Sentry for critical operations
-    sentry.withScope((scope) => {
-      scope.setTag('component', 'knowledge-base-db')
-      scope.setTag('operation', 'transaction_failure')
-      scope.setExtra('transactionId', transactionId)
-      sentry.captureException(error)
-    })
+    if (options?.shouldReportError?.(error) ?? true) {
+      sentry.withScope((scope) => {
+        scope.setTag('component', 'knowledge-base-db')
+        scope.setTag('operation', 'transaction_failure')
+        scope.setExtra('transactionId', transactionId)
+        sentry.captureException(error)
+      })
+    }
 
     throw error
   }

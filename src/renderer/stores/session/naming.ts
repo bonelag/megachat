@@ -1,10 +1,10 @@
-import * as Sentry from '@sentry/react'
-import { ApiError, NetworkError } from '@shared/models/errors'
+import { isExpectedGenerationError } from '@shared/models/error-classification'
 import type { ModelProvider } from '@shared/types'
 import { createModel } from '@/adapters'
 import { languageNameMap } from '@/i18n/locales'
 import { generateText } from '@/packages/model-calls'
 import * as promptFormat from '@/packages/prompts'
+import { reportError } from '@/utils/sentry'
 import * as chatStore from '../chatStore'
 import { settingsStore } from '../settingsStore'
 import { activeNameGenerations, pendingNameGenerations } from './state'
@@ -64,8 +64,11 @@ async function _generateName(sessionId: string, modifyName: (sessionId: string, 
     name = name.replace(/['""\u201C\u201D]/g, '').replace(/<think>.*?<\/think>/g, '')
     await modifyName(sessionId, name)
   } catch (e: unknown) {
-    if (!(e instanceof ApiError || e instanceof NetworkError)) {
-      Sentry.captureException(e)
+    if (!isExpectedGenerationError(e)) {
+      reportError(e, {
+        domain: 'ai-generation',
+        operation: 'generate_session_name',
+      })
     }
   }
 }

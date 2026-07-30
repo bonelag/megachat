@@ -1,5 +1,10 @@
 import NiceModal, { useModal } from '@ebay/nice-modal-react'
 import { Alert, Stack, Text } from '@mantine/core'
+import {
+  LOCAL_PARSER_FILE_TOO_LARGE_ERROR,
+  LOCAL_PARSER_MAX_PDF_FILE_SIZE_LABEL,
+  LOCAL_PARSER_PDF_PASSWORD_PROTECTED_ERROR,
+} from '@shared/file-parse-errors'
 import { ChatboxAIAPIError } from '@shared/models/errors'
 import { IconAlertCircle } from '@tabler/icons-react'
 import { Trans, useTranslation } from 'react-i18next'
@@ -16,7 +21,7 @@ import {
   SESSION_ATTACHMENT_RAG_PARSED_CONTENT_TOO_LARGE_ERROR,
   SESSION_ATTACHMENT_RAG_REQUIRES_KNOWLEDGE_BASE_ERROR,
   SESSION_ATTACHMENT_RAG_REQUIRES_TOOL_USE_MODEL_ERROR,
-} from '@/stores/sessionHelpers'
+} from '@/stores/sessionAttachmentRagErrors'
 import * as settingActions from '@/stores/settingActions'
 
 interface FileParseErrorProps {
@@ -38,6 +43,22 @@ const FileParseError = NiceModal.create(({ errorCode, fileName }: FileParseError
 
   // 错误提示内容
   const renderErrorTips = () => {
+    if (errorCode === LOCAL_PARSER_PDF_PASSWORD_PROTECTED_ERROR) {
+      return (
+        <Text>
+          {t('This PDF is password-protected, so its content cannot be read. Remove the password and upload it again.')}
+        </Text>
+      )
+    }
+    if (errorCode === LOCAL_PARSER_FILE_TOO_LARGE_ERROR) {
+      return (
+        <Text>
+          {t('This PDF is too large to process (max {{size}}). Please upload a smaller file.', {
+            size: LOCAL_PARSER_MAX_PDF_FILE_SIZE_LABEL,
+          })}
+        </Text>
+      )
+    }
     if (isSessionAttachmentRagAuthError(errorCode)) {
       return (
         <Text>

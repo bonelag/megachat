@@ -1,13 +1,5 @@
-import { ActionIcon, Alert, Button, Flex, Menu, Paper, Select, Stack, Text, Title, UnstyledButton } from '@mantine/core'
-import {
-  IconArrowRight,
-  IconDots,
-  IconExclamationCircle,
-  IconExternalLink,
-  IconHelp,
-  IconKey,
-  IconLogout,
-} from '@tabler/icons-react'
+import { Alert, Button, Flex, Paper, Select, Stack, Text, Title, UnstyledButton } from '@mantine/core'
+import { IconArrowRight, IconExclamationCircle, IconExternalLink, IconLogout } from '@tabler/icons-react'
 import { useQuery } from '@tanstack/react-query'
 import { forwardRef, useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -25,9 +17,11 @@ import {
   type UserLicense,
 } from '@/packages/remote'
 import platform from '@/platform'
+import { isChatboxAIPlanFree } from '@/stores/licensePlan'
 import * as premiumActions from '@/stores/premiumActions'
 import { settingsStore, useSettingsStore } from '@/stores/settingsStore'
 import { LicenseDetailCard } from './LicenseDetailCard'
+import type { UserProfile } from './types'
 
 interface LicenseDetailQueryError {
   data?: {
@@ -40,6 +34,11 @@ interface LoggedInViewProps {
   onLogout: () => void
   onSwitchToLicenseKey: () => void
   language: string
+  initialAccountData?: {
+    userProfile: UserProfile
+    licenses: UserLicense[]
+    licenseDetailResponse?: Awaited<ReturnType<typeof getLicenseDetailRealtime>>
+  }
   onShowLicenseSelectionModal?: (params: {
     licenses: UserLicense[]
     onConfirm: (licenseKey: string) => void
@@ -48,9 +47,12 @@ interface LoggedInViewProps {
 }
 
 export const LoggedInView = forwardRef<HTMLDivElement, LoggedInViewProps>(
-  ({ onLogout, language, onShowLicenseSelectionModal, onSwitchToLicenseKey }, ref) => {
+  ({ onLogout, language, initialAccountData, onShowLicenseSelectionModal, onSwitchToLicenseKey }, ref) => {
     const { t } = useTranslation()
-    const settings = useSettingsStore((state) => state)
+    const licenseKey = useSettingsStore((state) => state.licenseKey)
+    const licenseActivationMethod = useSettingsStore((state) => state.licenseActivationMethod)
+    const licenseInstances = useSettingsStore((state) => state.licenseInstances)
+    const lastSelectedLicenseByUser = useSettingsStore((state) => state.lastSelectedLicenseByUser)
     const [selectedLicenseKey, setSelectedLicenseKey] = useState<string | null>(null)
     const [displayLicenseKey, setDisplayLicenseKey] = useState<string | null>(null) // 用于显示在Select中的key，即使激活失败也保留
     const [activationError, setActivationError] = useState<string | null>(null)
@@ -63,47 +65,53 @@ export const LoggedInView = forwardRef<HTMLDivElement, LoggedInViewProps>(
     // 使用TanStack Query获取数据，不持久化
     const { data: userProfile, error: profileError } = useQuery({
       queryKey: ['userProfile'],
-      queryFn: getUserProfile,
+      queryFn: initialAccountData ? () => Promise.resolve(initialAccountData.userProfile) : getUserProfile,
       staleTime: 0, // 数据立即过期，总是刷新
       gcTime: 24 * 60 * 60 * 1000, // 缓存保留24小时
       refetchOnWindowFocus: true,
       placeholderData: (previousData) => previousData, // 使用之前的数据作为占位符
+      enabled: !initialAccountData,
+      initialData: initialAccountData?.userProfile,
     })
 
     const { data: licenses = [], error: licensesError } = useQuery({
       queryKey: ['userLicenses'],
-      queryFn: listLicensesByUser,
+      queryFn: initialAccountData ? () => Promise.resolve(initialAccountData.licenses) : listLicensesByUser,
       staleTime: 0, // 数据立即过期，总是刷新
       gcTime: 24 * 60 * 60 * 1000, // 缓存保留24小时
       refetchOnWindowFocus: true,
       placeholderData: (previousData) => previousData, // 使用之前的数据作为占位符
+      enabled: !initialAccountData,
+      initialData: initialAccountData?.licenses,
     })
 
     const {
-      data: licenseDetailResponse,
+      data: queriedLicenseDetailResponse,
       isLoading: loadingLicenseDetail,
       error: queryError,
     } = useQuery({
       queryKey: ['licenseDetail', selectedLicenseKey],
       queryFn: () => {
+        if (initialAccountData?.licenseDetailResponse) {
+          return initialAccountData.licenseDetailResponse
+        }
         if (!selectedLicenseKey) {
           throw new Error('Missing license key')
         }
         return getLicenseDetailRealtime({ licenseKey: selectedLicenseKey })
       },
-      enabled: !!selectedLicenseKey && !activationError,
+      enabled: !!selectedLicenseKey && !activationError && !initialAccountData,
       staleTime: 0, // 数据立即过期，总是刷新
       gcTime: 24 * 60 * 60 * 1000, // 缓存保留24小时
       refetchOnWindowFocus: true,
       placeholderData: (previousData) => previousData, // 使用之前的数据作为占位符
+      initialData: initialAccountData?.licenseDetailResponse,
     })
 
+    const licenseDetailResponse = initialAccountData?.licenseDetailResponse ?? queriedLicenseDetailResponse
     const licenseDetail = licenseDetailResponse?.data
-    if (process.env.NODE_ENV === 'development') {
-      console.log('[licenseDetailResponse] ', licenseDetail)
-    }
-    const normalizedQueryError = queryError as LicenseDetailQueryError | null
-    const lastSelectedLicenseKey = userProfile ? settings.lastSelectedLicenseByUser?.[userProfile.email] : undefined
+    const normalizedQueryError = initialAccountData ? null : (queryError as LicenseDetailQueryError | null)
+    const lastSelectedLicenseKey = userProfile ? lastSelectedLicenseByUser?.[userProfile.email] : undefined
     // 合并两种错误来源：1) API 返回 200 但带有 error 字段  2) API 返回 4xx/5xx 被 ofetch 抛出
     const licenseDetailError =
       licenseDetailResponse?.error || normalizedQueryError?.data?.error || normalizedQueryError?.error
@@ -131,10 +139,7 @@ export const LoggedInView = forwardRef<HTMLDivElement, LoggedInViewProps>(
     useEffect(() => {
       if (!userProfile || licenses.length === 0) return
 
-      const needActivation =
-        !settings.licenseKey ||
-        settings.licenseActivationMethod !== 'login' ||
-        !settings.licenseInstances?.[settings.licenseKey]
+      const needActivation = !licenseKey || licenseActivationMethod !== 'login' || !licenseInstances?.[licenseKey]
 
       if (needActivation) {
         // 确定要激活的license
@@ -275,15 +280,15 @@ export const LoggedInView = forwardRef<HTMLDivElement, LoggedInViewProps>(
         }
       } else {
         // 已激活直接显示。如用户在 loggedinview 和 licenseview 切换
-        setSelectedLicenseKey(settings.licenseKey || null)
-        setDisplayLicenseKey(settings.licenseKey || null)
+        setSelectedLicenseKey(licenseKey || null)
+        setDisplayLicenseKey(licenseKey || null)
       }
     }, [
       userProfile,
       licenses,
-      settings.licenseKey,
-      settings.licenseActivationMethod,
-      settings.licenseInstances,
+      licenseKey,
+      licenseActivationMethod,
+      licenseInstances,
       lastSelectedLicenseKey,
       onShowLicenseSelectionModal,
     ])
@@ -299,7 +304,7 @@ export const LoggedInView = forwardRef<HTMLDivElement, LoggedInViewProps>(
         try {
           settingsStore.setState({
             lastSelectedLicenseByUser: {
-              ...settings.lastSelectedLicenseByUser,
+              ...lastSelectedLicenseByUser,
               [userProfile.email]: newKey,
             },
           })
@@ -320,7 +325,7 @@ export const LoggedInView = forwardRef<HTMLDivElement, LoggedInViewProps>(
           setSwitchingLicense(false)
         }
       },
-      [userProfile, settings.lastSelectedLicenseByUser, switchingLicense]
+      [userProfile, lastSelectedLicenseByUser, switchingLicense]
     )
 
     if (profileError || licensesError) {
@@ -460,7 +465,8 @@ export const LoggedInView = forwardRef<HTMLDivElement, LoggedInViewProps>(
                           return t('This license key has reached the activation limit.')
                         case 'quota_exceeded': {
                           const selectedLicense = licenses.find((l) => l.key === selectedLicenseKey)
-                          return selectedLicense?.product_name === 'Chatbox AI Free'
+                          return selectedLicense?.plan === 'free' ||
+                            (!selectedLicense?.plan && selectedLicense?.product_name === 'Chatbox AI Free')
                             ? t('You have no more Chatbox AI quota left today.')
                             : t('You have no more Chatbox AI quota left this month.')
                         }
@@ -545,7 +551,7 @@ export const LoggedInView = forwardRef<HTMLDivElement, LoggedInViewProps>(
                 <Flex gap="xs" align="center" c="chatbox-primary">
                   <ScalableIcon icon={IconExclamationCircle} className="flex-shrink-0" />
                   <Text>
-                    {licenseDetail.name === 'Chatbox AI Free'
+                    {isChatboxAIPlanFree(licenseDetail)
                       ? t('You have no more Chatbox AI quota left today.')
                       : t('You have no more Chatbox AI quota left this month.')}
                   </Text>

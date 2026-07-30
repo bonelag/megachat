@@ -3,6 +3,7 @@ import type { LanguageModelV3 } from '@ai-sdk/provider'
 import AbstractAISDKModel, { type CallSettings } from '../../../models/abstract-ai-sdk'
 import { ApiError } from '../../../models/errors'
 import type { CallChatCompletionOptions } from '../../../models/types'
+import { isDeepSeekReasoningModel, isDeepSeekWeakToolUse } from '../../../models/utils/deepseek'
 import type { ProviderModelInfo, ToolUseScope } from '../../../types'
 import type { ModelDependencies } from '../../../types/adapters'
 
@@ -36,24 +37,24 @@ export default class DeepSeek extends AbstractAISDKModel {
     return provider.chat(this.options.model.modelId)
   }
 
-  protected getCallSettings(_options: CallChatCompletionOptions): CallSettings {
-    const isReasonerModel = this.options.model.modelId === 'deepseek-reasoner'
+  protected getCallSettings(options: CallChatCompletionOptions): CallSettings {
+    const thinkingType = options.providerOptions?.deepseek?.thinking?.type
+    const isThinkingMode = this.isSupportReasoning() && thinkingType !== 'disabled'
     const settings: CallSettings = {
       maxOutputTokens: this.options.maxOutputTokens,
     }
 
-    // reasoner model doesn't support temperature and topP
-    if (!isReasonerModel) {
+    // DeepSeek thinking mode does not support temperature or topP.
+    if (!isThinkingMode) {
       settings.temperature = this.options.temperature
       settings.topP = this.options.topP
     }
 
-    // Enable thinking for reasoner model
-    if (this.isSupportReasoning()) {
+    if (this.isSupportReasoning() && thinkingType) {
       settings.providerOptions = {
         deepseek: {
           thinking: {
-            type: 'enabled',
+            type: thinkingType,
           },
         } satisfies DeepSeekChatOptions,
       }
@@ -63,14 +64,12 @@ export default class DeepSeek extends AbstractAISDKModel {
   }
 
   isSupportToolUse(scope?: ToolUseScope) {
-    if (
-      scope &&
-      ['web-browsing', 'read-file'].includes(scope) &&
-      /deepseek-(v3|r1)$/.test(this.options.model.modelId.toLowerCase())
-    ) {
-      return false
-    }
+    if (isDeepSeekWeakToolUse(this.options.model.modelId, scope)) return false
     return super.isSupportToolUse()
+  }
+
+  isSupportReasoning() {
+    return isDeepSeekReasoningModel(this.options.model.modelId)
   }
 
   async listModels(): Promise<ProviderModelInfo[]> {

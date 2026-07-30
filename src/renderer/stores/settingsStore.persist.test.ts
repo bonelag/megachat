@@ -1,8 +1,13 @@
+import { settings as defaultSettings } from '@shared/defaults'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 type PersistedSettings = Record<string, unknown> | null
+type MockPlatformType = 'desktop' | 'web' | 'mobile'
 
-async function loadSettingsStoreModule(persistedSettings: PersistedSettings = null) {
+async function loadSettingsStoreModule(
+  persistedSettings: PersistedSettings = null,
+  platformType: MockPlatformType = 'desktop'
+) {
   vi.resetModules()
 
   const mockStorage = {
@@ -18,7 +23,7 @@ async function loadSettingsStoreModule(persistedSettings: PersistedSettings = nu
 
   vi.doMock('@/platform', () => ({
     default: {
-      type: 'desktop',
+      type: platformType,
       ensureShortcutConfig: vi.fn(),
       ensureProxyConfig: vi.fn(),
       ensureAutoLaunch: vi.fn(),
@@ -145,7 +150,106 @@ describe('settingsStore persistence', () => {
           apiHost: 'https://api.openai.com',
         },
       },
-      __version: 4,
+      __version: 5,
     })
+  })
+
+  it('migrates legacy Text Only document parser to Chatbox AI on web and mobile', async () => {
+    const persistedSettings = {
+      extension: {
+        documentParser: { type: 'none' },
+      },
+      __version: 4,
+    }
+
+    const webStore = await loadSettingsStoreModule(persistedSettings, 'web')
+    const webSettings = await webStore.initSettingsStore()
+    expect(webSettings.extension?.documentParser?.type).toBe('chatbox-ai')
+
+    const mobileStore = await loadSettingsStoreModule(persistedSettings, 'mobile')
+    const mobileSettings = await mobileStore.initSettingsStore()
+    expect(mobileSettings.extension?.documentParser?.type).toBe('chatbox-ai')
+  })
+
+  it('keeps desktop default document parser local', async () => {
+    const { getPlatformDefaultDocumentParser } = await loadSettingsStoreModule(null, 'desktop')
+
+    expect(getPlatformDefaultDocumentParser()).toEqual({ type: 'local' })
+  })
+
+  it.each([
+    [
+      '1.19 mod+r new thread shortcut',
+      2,
+      {
+        ...defaultSettings().shortcuts,
+        messageListRefreshContext: 'mod+r',
+        newPictureChat: 'mod+shift+n',
+      },
+    ],
+    [
+      '1.20 mod+r new thread shortcut',
+      4,
+      {
+        ...defaultSettings().shortcuts,
+        messageListRefreshContext: 'mod+r',
+        newPictureChat: 'mod+shift+n',
+      },
+    ],
+    [
+      '1.19/1.20 mod+r new thread shortcut with current persist version',
+      5,
+      {
+        ...defaultSettings().shortcuts,
+        messageListRefreshContext: 'mod+r',
+        newPictureChat: 'mod+shift+n',
+      },
+    ],
+    [
+      '1.21 missing new thread shortcut',
+      4,
+      (() => {
+        const shortcuts: Record<string, unknown> = {
+          ...defaultSettings().shortcuts,
+          newPictureChat: 'mod+shift+n',
+        }
+        delete shortcuts.messageListRefreshContext
+        return shortcuts
+      })(),
+    ],
+    [
+      '1.21 missing new thread shortcut with current persist version',
+      5,
+      (() => {
+        const shortcuts: Record<string, unknown> = {
+          ...defaultSettings().shortcuts,
+          newPictureChat: 'mod+shift+n',
+        }
+        delete shortcuts.messageListRefreshContext
+        return shortcuts
+      })(),
+    ],
+  ])('normalizes legacy shortcut settings from %s', async (_name, version, shortcuts) => {
+    const persistedSettings = {
+      shortcuts,
+      __version: version,
+    }
+
+    const { initSettingsStore, settingsStore } = await loadSettingsStoreModule(persistedSettings)
+
+    const hydrated = await initSettingsStore()
+
+    expect(hydrated.shortcuts.messageListRefreshContext).toBe('mod+shift+n')
+    expect(hydrated.shortcuts.newPictureChat).toBe('')
+    expect(settingsStore.getState().shortcuts.messageListRefreshContext).toBe('mod+shift+n')
+    expect(settingsStore.getState().shortcuts.newPictureChat).toBe('')
+  })
+
+  it('uses Chatbox AI as the default document parser on web and mobile', async () => {
+    const webStore = await loadSettingsStoreModule(null, 'web')
+    expect(webStore.getPlatformDefaultDocumentParser()).toEqual({ type: 'chatbox-ai' })
+
+    const mobileStore = await loadSettingsStoreModule(null, 'mobile')
+    expect(mobileStore.getPlatformDefaultDocumentParser()).toEqual({ type: 'chatbox-ai' })
   })
 })

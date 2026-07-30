@@ -1,4 +1,4 @@
-import type { KnowledgeBase, MessagePicture, Toast } from '@shared/types'
+import type { AgentModeEntry, KnowledgeBase, MessagePicture, Toast } from '@shared/types'
 import type { RefObject } from 'react'
 import type { VirtuosoHandle } from 'react-virtuoso'
 import { v4 as uuidv4 } from 'uuid'
@@ -6,6 +6,14 @@ import { createStore, useStore } from 'zustand'
 import { combine, persist } from 'zustand/middleware'
 import platform from '@/platform'
 import { safeStorage } from './safeStorage'
+
+const isSmallScreenViewport = () => {
+  return (
+    typeof window !== 'undefined' &&
+    typeof window.matchMedia === 'function' &&
+    window.matchMedia('(max-width: 599.95px)').matches
+  )
+}
 
 // UI store for managing UI-related state
 // 不能使用immer middleware，会导致RefObject出问题
@@ -20,7 +28,7 @@ export const uiStore = createStore(
         messageScrolling: null as RefObject<VirtuosoHandle> | null,
         messageScrollingAtTop: false,
         messageScrollingAtBottom: false,
-        showSidebar: platform.type !== 'mobile',
+        showSidebar: platform.type !== 'mobile' && !isSmallScreenViewport(),
         openSearchDialog: false,
         searchDialogGlobalOnly: false, // 是否只显示全局搜索（用于对话列表）
         openAboutDialog: false, // 是否展示相关信息的窗口
@@ -32,6 +40,10 @@ export const uiStore = createStore(
         newSessionState: {} as {
           knowledgeBase?: Pick<KnowledgeBase, 'id' | 'name'>
           webBrowsing?: boolean
+          // Working directories bound before the session is persisted; transferred into the
+          // created session's settings on first submit (see routes/index.tsx).
+          workingDirectories?: string[]
+          agentFullAccess?: boolean
         },
         pictureShow: null as {
           picture: MessagePicture
@@ -44,11 +56,12 @@ export const uiStore = createStore(
         widthFull: false, // Stored UI preference
         showCopilotsInNewSession: false,
         sidebarWidth: null as number | null, // Custom sidebar width, null means use default
-        sidebarMode: 'chat' as 'chat' | 'task',
+        agentModeSmartSwitchingDefault: true,
+        sessionAgentModeMap: {} as Record<string, AgentModeEntry>,
       },
       (set, get) => ({
-        addToast: (content: string, duration?: number) => {
-          const newToast = { id: `toast:${uuidv4()}`, content, duration }
+        addToast: (content: string, duration?: number, action?: Toast['action']) => {
+          const newToast = { id: `toast:${uuidv4()}`, content, duration, action }
           set((state) => ({
             ...state,
             toasts: [...state.toasts, newToast],
@@ -199,8 +212,20 @@ export const uiStore = createStore(
           set({ sidebarWidth })
         },
 
-        setSidebarMode: (sidebarMode: 'chat' | 'task') => {
-          set({ sidebarMode })
+        setAgentModeSmartSwitchingDefault: (enabled: boolean) => {
+          set({ agentModeSmartSwitchingDefault: enabled })
+        },
+
+        clearSessionAgentMode: (sessionId?: string) => {
+          if (sessionId) {
+            set((state) => {
+              const newMap = { ...state.sessionAgentModeMap }
+              delete newMap[sessionId]
+              return { sessionAgentModeMap: newMap }
+            })
+          } else {
+            set({ sessionAgentModeMap: {} })
+          }
         },
       })
     ),
@@ -211,6 +236,7 @@ export const uiStore = createStore(
         widthFull: state.widthFull,
         showCopilotsInNewSession: state.showCopilotsInNewSession,
         sidebarWidth: state.sidebarWidth,
+        agentModeSmartSwitchingDefault: state.agentModeSmartSwitchingDefault,
         sessionWebBrowsingMap: state.sessionWebBrowsingMap,
       }),
       storage: safeStorage,

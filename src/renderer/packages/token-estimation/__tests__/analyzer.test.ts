@@ -60,7 +60,7 @@ describe('analyzeTokenRequirements', () => {
     // Note: For constructedMessage (current input), tokens are ALWAYS calculated inline.
     // This is because constructedMessage only exists in React state, not in the store,
     // so async task execution would fail. Cache is ignored for current input.
-    // 'Hello world' = 2 tokens (tiktoken), ~7 tokens (deepseek)
+    // 'Hello world' = 2 tokens (tiktoken), 4 tokens (deepseek)
 
     it('calculates tokens inline for current input (ignores cache)', () => {
       const message = createMessage({
@@ -116,9 +116,9 @@ describe('analyzeTokenRequirements', () => {
         modelSupportToolUseForFile: false,
       })
 
-      // 'Hello world' = 2 tokens (tiktoken), 7 tokens (deepseek)
+      // 'Hello world' = 2 tokens (tiktoken), 4 tokens (deepseek heuristic: 10 letters × 0.3 + 1 space)
       expect(defaultResult.currentInputTokens).toBe(2)
-      expect(deepseekResult.currentInputTokens).toBe(7)
+      expect(deepseekResult.currentInputTokens).toBe(4)
     })
 
     it('returns cached token count for context messages when valid', () => {
@@ -591,8 +591,8 @@ describe('analyzeTokenRequirements', () => {
         modelSupportToolUseForFile: false,
       })
 
-      // 'Hello world' with deepseek tokenizer = 7 tokens
-      expect(result.currentInputTokens).toBe(7)
+      // 'Hello world' with deepseek tokenizer = 4 tokens (10 letters × 0.3 + 1 space)
+      expect(result.currentInputTokens).toBe(4)
     })
 
     it('uses deepseek cache key for context messages', () => {

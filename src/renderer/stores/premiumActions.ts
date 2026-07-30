@@ -1,4 +1,3 @@
-import * as Sentry from '@sentry/react'
 import omit from 'lodash/omit'
 import { FetchError } from 'ofetch'
 import { useEffect } from 'react'
@@ -6,6 +5,7 @@ import { trackJkClickEvent } from '@/analytics/jk'
 import { JK_EVENTS, JK_PAGE_NAMES } from '@/analytics/jk-events'
 import { getLogger } from '@/lib/utils'
 import { mcpController } from '@/packages/mcp/controller'
+import { reportError } from '@/utils/sentry'
 import * as remote from '../packages/remote'
 import platform from '../platform'
 import { authInfoStore } from './authInfoStore'
@@ -95,9 +95,12 @@ export function useAutoValidate(): boolean {
         if (err instanceof FetchError && err.status && [401, 403, 404].includes(err.status)) {
           clearValidatedData()
           log.info(`clear license validated data due to respones status: ${err.status}`)
-        } else {
-          // 其余情况可能是联网出现问题，不清除数据
-          Sentry.captureException(err)
+        } else if (!(err instanceof FetchError)) {
+          // Expected API/network failures keep the current validation state and stay out of Sentry.
+          reportError(err, {
+            domain: 'subscription',
+            operation: 'validate_license',
+          })
         }
       }
     })()
@@ -232,9 +235,12 @@ export async function activate(
     },
     licenseDetail: licenseDetailResponse.data || undefined,
     licensePlanName: licenseDetailResponse.data?.name,
+    defaultEmbeddingModel: undefined,
+    defaultRerankModel: undefined,
     // 同步更新手动激活的 license key 显示值（用于设置页面输入框回显）
     ...(method === 'manual' ? { memorizedManualLicenseKey: licenseKey } : {}),
   }))
+  remote.invalidateSessionRagConfigCache()
   if (shouldTrackKeyVerifyEvent) {
     trackJkClickEvent(JK_EVENTS.KEY_VERIFY_SUCCESS, {
       pageName,
@@ -243,6 +249,6 @@ export async function activate(
       props: { content_add_info: { content: 'Chatbox AI' } },
     })
   }
-  log.info(`✅ Activated license key: ${licenseKey.slice(0, 8)}****`)
+  log.info(`✅ Activated license key: ${licenseKey.slice(0, 8)}**** and cleared default RAG fallback models`)
   return result
 }

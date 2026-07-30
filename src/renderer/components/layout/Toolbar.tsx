@@ -3,9 +3,11 @@ import { ActionIcon, Button, Flex } from '@mantine/core'
 import {
   IconClearAll,
   IconCode,
+  IconCopy,
   IconDeviceFloppy,
   IconDots,
   IconHistory,
+  IconId,
   IconSearch,
   IconTrash,
 } from '@tabler/icons-react'
@@ -13,16 +15,18 @@ import { useSetAtom } from 'jotai'
 import { useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useIsLargeScreen, useIsSmallScreen } from '@/hooks/useScreenChange'
+import { copyToClipboard } from '@/packages/navigator'
 import { router } from '@/router'
 import * as atoms from '@/stores/atoms'
-import { deleteSession, getSession } from '@/stores/chatStore'
-import { clear as clearSession } from '@/stores/sessionActions'
+import { confirmSessionDeletion, deleteSession, getSession } from '@/stores/chatStore'
+import { clear as clearSession, copyAndSwitchSession } from '@/stores/sessionActions'
+import * as toastActions from '@/stores/toastActions'
 import { useUIStore } from '@/stores/uiStore'
 import ActionMenu from '../ActionMenu'
+import { ScalableIcon } from '../common/ScalableIcon'
 import Broom from '../icons/Broom'
 import LayoutExpand from '../icons/LayoutExpand'
 import LayoutShrink from '../icons/LayoutShrink'
-import { ScalableIcon } from '../common/ScalableIcon'
 
 /**
  * 顶部标题工具栏（右侧）
@@ -45,6 +49,9 @@ export default function Toolbar({ sessionId }: { sessionId: string }) {
     void clearSession(sessionId)
   }
   const handleSessionDelete = async () => {
+    if (!(await confirmSessionDeletion(sessionId))) {
+      return
+    }
     try {
       await deleteSession(sessionId)
       router.navigate({ to: '/', replace: true })
@@ -58,6 +65,18 @@ export default function Toolbar({ sessionId }: { sessionId: string }) {
     if (session) {
       await NiceModal.show('json-viewer', { title: t('Session Raw JSON'), data: session })
     }
+  }, [sessionId, t])
+
+  const handleCopySession = useCallback(async () => {
+    const session = await getSession(sessionId)
+    if (session) {
+      await copyAndSwitchSession(session)
+    }
+  }, [sessionId])
+
+  const handleCopySessionId = useCallback(() => {
+    copyToClipboard(sessionId)
+    toastActions.add(t('copied to clipboard'), 2000)
   }, [sessionId, t])
 
   return !isSmallScreen ? (
@@ -113,6 +132,16 @@ export default function Toolbar({ sessionId }: { sessionId: string }) {
         position="bottom-end"
         items={[
           {
+            text: t('Duplicate Conversation'),
+            icon: IconCopy,
+            onClick: handleCopySession,
+          },
+          {
+            text: t('Copy Conversation ID'),
+            icon: IconId,
+            onClick: handleCopySessionId,
+          },
+          {
             text: t('Export Chat'),
             icon: IconDeviceFloppy,
             onClick: handleExportAndSave,
@@ -167,7 +196,16 @@ export default function Toolbar({ sessionId }: { sessionId: string }) {
             icon: IconHistory,
             onClick: () => setThreadHistoryDrawerOpen(true),
           },
-
+          {
+            text: t('Duplicate Conversation'),
+            icon: IconCopy,
+            onClick: handleCopySession,
+          },
+          {
+            text: t('Copy Conversation ID'),
+            icon: IconId,
+            onClick: handleCopySessionId,
+          },
           {
             text: t('Export Chat'),
             icon: IconDeviceFloppy,

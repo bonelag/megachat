@@ -1,64 +1,149 @@
+import { spawn } from 'node:child_process'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 import type { MarketplaceSkill } from '@shared/types/skills'
-import { spawn } from 'child_process'
-import { app, ipcMain, shell } from 'electron'
-import fs from 'fs'
-import path from 'path'
+import { app, BrowserWindow, ipcMain, shell } from 'electron'
 import { getLogger } from '../util'
-import { discoverSkills } from './discovery'
+import { discoverBuiltinSkills, ensureBuiltinSeeded, syncBuiltinSkills } from './builtin-sync'
+import { discoverAgentSkills, discoverClaudeSkills, discoverSkills } from './discovery'
 import { detectSkillsInRepo } from './github-fetcher'
-import { checkForUpdates, deleteSkill, installSkillFromGitHub, installSkillFromMarketplace } from './installer'
+import {
+  checkForUpdates,
+  deleteSkill,
+  installSkillFromGitHub,
+  installSkillFromMarketplace,
+  installSkillFromSandbox,
+} from './installer'
 import { parseSkillFile } from './parser'
+import { collectSkillFiles, MAX_SKILL_FILES } from './skill-files'
+import { createDefaultUserExecRunner, type UserExecParams } from './user-exec-runner'
 import { isValidSkillName } from './validation'
 
 const log = getLogger('skills:ipc-handlers')
+
+const userExecRunner = createDefaultUserExecRunner()
+
 function getSkillsDir(): string {
   return path.join(app.getPath('userData'), 'skills')
 }
 
+function getClaudeSkillsDir(): string {
+  return path.join(os.homedir(), '.claude', 'skills')
+}
+
+function getAgentSkillsDir(): string {
+  return path.join(os.homedir(), '.agents', 'skills')
+}
+
+// Module-level name→path cache for fast skill loading
+let skillPathCache: Map<string, string> | null = null
+
+function invalidateSkillCache(): void {
+  skillPathCache = null
+}
+
+function broadcastBuiltinUpdated(): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    win.webContents.send('skills:builtin-updated')
+  }
+}
+
+function buildSkillCache(): Map<string, string> {
+  const builtinSkillInfos = discoverBuiltinSkills()
+  const chatboxSkills = discoverSkills(getSkillsDir())
+  const claimedNames = new Set([...builtinSkillInfos.map((s) => s.name), ...chatboxSkills.map((s) => s.name)])
+  const claudeSkills = discoverClaudeSkills(getClaudeSkillsDir(), claimedNames)
+  for (const s of claudeSkills) claimedNames.add(s.name)
+  const agentSkills = discoverAgentSkills(getAgentSkillsDir(), claimedNames)
+  const allSkills = [...builtinSkillInfos, ...chatboxSkills, ...claudeSkills, ...agentSkills]
+  skillPathCache = new Map(allSkills.map((s) => [s.name, s.path]))
+  return skillPathCache
+}
+
+function getOrBuildSkillCache(): Map<string, string> {
+  return skillPathCache ?? buildSkillCache()
+}
+
 export function registerSkillsHandlers() {
-  ipcMain.handle('skills:discover', async () => {
+  // 确保打包种子已落地，保证内置 skill 立即可用（含离线）
+  ensureBuiltinSeeded()
+  // 后台静默从后端同步内置 skill，有更新则覆盖快照并通知 renderer 刷新
+  syncBuiltinSkills()
+    .then((changed) => {
+      if (changed) {
+        invalidateSkillCache()
+        broadcastBuiltinUpdated()
+      }
+    })
+    .catch((error) => log.warn('initial builtin skills sync failed', error))
+
+  ipcMain.handle('skills:sync-builtin', async (_event, lang?: string) => {
     try {
-      const skillsDir = getSkillsDir()
-      return discoverSkills(skillsDir)
+      const changed = await syncBuiltinSkills(lang)
+      if (changed) invalidateSkillCache()
+      return { changed }
+    } catch (error) {
+      log.error('skills:sync-builtin failed', error)
+      return { changed: false }
+    }
+  })
+
+  ipcMain.handle('skills:discover', () => {
+    try {
+      const builtinSkillInfos = discoverBuiltinSkills()
+      const chatboxSkills = discoverSkills(getSkillsDir())
+      const claimedNames = new Set([...builtinSkillInfos.map((s) => s.name), ...chatboxSkills.map((s) => s.name)])
+      const claudeSkills = discoverClaudeSkills(getClaudeSkillsDir(), claimedNames)
+      for (const s of claudeSkills) claimedNames.add(s.name)
+      const agentSkills = discoverAgentSkills(getAgentSkillsDir(), claimedNames)
+      const allSkills = [...builtinSkillInfos, ...chatboxSkills, ...claudeSkills, ...agentSkills]
+      // Rebuild cache as a side effect of discovery
+      skillPathCache = new Map(allSkills.map((s) => [s.name, s.path]))
+      return allSkills
     } catch (error) {
       log.error('skills:discover failed', error)
       throw error
     }
   })
 
-  ipcMain.handle('skills:load', async (_event, name: string) => {
+  ipcMain.handle('skills:load', (_event, name: string) => {
     try {
-      if (!name || typeof name !== 'string') {
-        return null
-      }
-      if (!isValidSkillName(name)) {
-        return null
-      }
+      if (!name || typeof name !== 'string') return null
+      if (!isValidSkillName(name)) return null
 
-      const skillsDir = getSkillsDir()
-      if (!fs.existsSync(skillsDir)) {
-        return null
-      }
-      const entries = fs.readdirSync(skillsDir, { withFileTypes: true })
-      for (const entry of entries) {
-        if (!entry.isDirectory()) continue
-        const skillMdPath = path.join(skillsDir, entry.name, 'SKILL.md')
-        if (!fs.existsSync(skillMdPath)) continue
-
-        const parsed = parseSkillFile(skillMdPath, entry.name)
-        if (parsed && parsed.metadata.name === name) {
-          return { body: parsed.body, metadata: parsed.metadata }
+      const loadFromPath = (skillPath: string) => {
+        const skillMdPath = path.join(skillPath, 'SKILL.md')
+        if (!fs.existsSync(skillMdPath)) return null
+        const parsed = parseSkillFile(skillMdPath)
+        if (!parsed) return null
+        const { files, truncated } = collectSkillFiles(skillPath)
+        if (truncated) {
+          log.warn(`skills:load: file list for "${name}" truncated to ${MAX_SKILL_FILES} entries`)
         }
+        return { body: parsed.body, metadata: parsed.metadata, skillRoot: skillPath, files }
       }
 
-      return null
+      const cache = getOrBuildSkillCache()
+      const skillPath = cache.get(name)
+      if (!skillPath) return null
+
+      const result = loadFromPath(skillPath)
+      if (result) return result
+
+      // Stale cache — invalidate and retry once
+      invalidateSkillCache()
+      const retryCache = getOrBuildSkillCache()
+      const retryPath = retryCache.get(name)
+      if (!retryPath) return null
+      return loadFromPath(retryPath)
     } catch (error) {
       log.error(`skills:load failed for name=${name}`, error)
       throw error
     }
   })
 
-  ipcMain.handle('skills:get-directory', async () => {
+  ipcMain.handle('skills:get-directory', () => {
     return getSkillsDir()
   })
 
@@ -197,7 +282,9 @@ export function registerSkillsHandlers() {
 
   ipcMain.handle('skills:install', async (_event, params: { owner: string; repo: string; skillPath: string }) => {
     try {
-      return await installSkillFromGitHub(params.owner, params.repo, params.skillPath)
+      const result = await installSkillFromGitHub(params.owner, params.repo, params.skillPath)
+      if (result.success) invalidateSkillCache()
+      return result
     } catch (error) {
       log.error('skills:install failed', error)
       throw error
@@ -206,16 +293,34 @@ export function registerSkillsHandlers() {
 
   ipcMain.handle('skills:install-marketplace', async (_event, skill: MarketplaceSkill) => {
     try {
-      return await installSkillFromMarketplace(skill)
+      const result = await installSkillFromMarketplace(skill)
+      if (result.success) invalidateSkillCache()
+      return result
     } catch (error) {
       log.error('skills:install-marketplace failed', error)
       throw error
     }
   })
 
+  ipcMain.handle(
+    'skills:install-from-sandbox',
+    async (_event, params: { sandboxPath: string; sessionId?: string; sourceInfo?: string }) => {
+      try {
+        const result = await installSkillFromSandbox(params.sandboxPath, params.sessionId, params.sourceInfo)
+        if (result.success) invalidateSkillCache()
+        return result
+      } catch (error) {
+        log.error('skills:install-from-sandbox failed', error)
+        throw error
+      }
+    }
+  )
+
   ipcMain.handle('skills:delete', async (_event, skillName: string) => {
     try {
-      return await deleteSkill(skillName)
+      const result = await deleteSkill(skillName)
+      if (result.success) invalidateSkillCache()
+      return result
     } catch (error) {
       log.error(`skills:delete failed for "${skillName}"`, error)
       throw error
@@ -230,6 +335,8 @@ export function registerSkillsHandlers() {
       throw error
     }
   })
+
+  ipcMain.handle('skills:user-exec', (_event, params: UserExecParams) => userExecRunner.run(params))
 
   ipcMain.handle('skills:check-updates-batch', async () => {
     try {

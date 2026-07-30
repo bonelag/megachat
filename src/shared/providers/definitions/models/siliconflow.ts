@@ -1,5 +1,6 @@
 import OpenAICompatible, { type OpenAICompatibleSettings } from '../../../models/openai-compatible'
 import type { ToolUseScope } from '../../../types'
+import { isDeepSeekWeakToolUse } from '../../../models/utils/deepseek'
 import type { ModelDependencies } from '../../../types/adapters'
 
 interface Options extends OpenAICompatibleSettings {}
@@ -28,14 +29,7 @@ export default class SiliconFlow extends OpenAICompatible {
   }
 
   isSupportToolUse(scope?: ToolUseScope) {
-    // v3和r1模型的function能力较差，v3.1可以开启
-    if (
-      scope &&
-      ['web-browsing', 'read-file'].includes(scope) &&
-      /deepseek-(v3|r1)$/.test(this.options.model.modelId.toLowerCase())
-    ) {
-      return false
-    }
+    if (isDeepSeekWeakToolUse(this.options.model.modelId, scope)) return false
     return super.isSupportToolUse()
   }
 }

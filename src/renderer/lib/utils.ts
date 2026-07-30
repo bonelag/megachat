@@ -13,6 +13,33 @@ export function cn(...inputs: ClassValue[]) {
 }
 
 export function getLogger(logId: string) {
+  const serializeArg = (arg: unknown): string => {
+    if (arg instanceof Error) {
+      return JSON.stringify({
+        name: arg.name,
+        message: arg.message,
+        stack: arg.stack,
+      })
+    }
+    if (typeof arg === 'string') {
+      return arg
+    }
+    if (arg === undefined) {
+      return 'undefined'
+    }
+    if (arg === null) {
+      return 'null'
+    }
+    if (typeof arg === 'object') {
+      try {
+        return JSON.stringify(arg)
+      } catch (_error) {
+        return String(arg)
+      }
+    }
+    return String(arg)
+  }
+
   // const logger = log.create({ logId })
   // logger.transports.console.format = '{h}:{i}:{s}.{ms} › [{logId}] › {text}'
   // return logger
@@ -20,8 +47,9 @@ export function getLogger(logId: string) {
     log(level: string, ...args: any[]) {
       const store = getDefaultStore()
       const now = dayjs().format('HH:mm:ss.SSS')
-      store.set(initLogAtom, [...store.get(initLogAtom), `[${now}][${logId}] ${args.join(' ')}`])
-      platform.appLog(level, args.join(' ')).catch((e) => {
+      const message = args.map((arg) => serializeArg(arg)).join(' ')
+      store.set(initLogAtom, [...store.get(initLogAtom), `[${now}][${logId}] ${message}`])
+      platform.appLog(level, message).catch((e) => {
         console.error('Failed to send log to main process', e)
       })
     },

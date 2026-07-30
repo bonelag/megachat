@@ -1,17 +1,25 @@
-import OpenAICompatible, { type OpenAICompatibleSettings } from '../../../models/openai-compatible'
+import type { ProviderModelInfo } from '../../../types'
 import type { ModelDependencies } from '../../../types/adapters'
+import OpenAIResponses from './openai-responses'
 
-interface Options extends OpenAICompatibleSettings {}
+interface Options {
+  apiKey: string
+  model: ProviderModelInfo
+  temperature?: number
+  topP?: number
+  maxOutputTokens?: number
+  stream?: boolean
+}
 
-export default class XAI extends OpenAICompatible {
+export default class XAI extends OpenAIResponses {
   public name = 'xAI'
-  public options: Options
-  constructor(options: Omit<Options, 'apiHost'>, dependencies: ModelDependencies) {
+  constructor(options: Options, dependencies: ModelDependencies) {
     const apiHost = 'https://api.x.ai/v1'
     super(
       {
         apiKey: options.apiKey,
         apiHost,
+        apiPath: '/responses',
         model: options.model,
         temperature: options.temperature,
         topP: options.topP,
@@ -20,9 +28,5 @@ export default class XAI extends OpenAICompatible {
       },
       dependencies
     )
-    this.options = {
-      ...options,
-      apiHost,
-    }
   }
 }

@@ -1,12 +1,18 @@
 .actionsList {
-  max-height: min(600px, calc(100vh - 180px));
+  min-height: 0;
   scrollbar-gutter: stable;
+  overscroll-behavior: contain;
 }
 
-.actionsList [data-radix-scroll-area-viewport] {
+.actionsList > div {
+  min-height: 0;
+}
+
+.actionsList [data-scrollbars] {
+  min-height: 0;
   mask-image: linear-gradient(to bottom, #000 calc(100% - 28px), transparent);
 }
 
-.actionsList [data-radix-scroll-area-viewport] > div {
+.actionsList [data-scrollbars] > div {
   padding-bottom: 20px;
 }

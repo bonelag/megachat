@@ -1,7 +1,7 @@
 import { createBearerOAuthFetch, createOAuthCredentialManager } from '../../oauth'
 import { ModelProviderEnum, ModelProviderType } from '../../types'
 import { defineProvider } from '../registry'
-import OpenAI from './models/openai'
+import Qwen from './models/qwen'
 
 export const QWEN_PORTAL_API_HOST = 'https://portal.qwen.ai/v1'
 
@@ -43,16 +43,15 @@ export const qwenPortalProvider = defineProvider({
       config.dependencies
     )
 
-    return new OpenAI(
+    return new Qwen(
       {
+        name: 'Qwen Portal',
         apiKey: isOAuth ? 'oauth-placeholder' : config.effectiveApiKey,
         apiHost: config.formattedApiHost || QWEN_PORTAL_API_HOST,
         model: config.model,
-        dalleStyle: 'vivid',
         temperature: config.settings.temperature,
         topP: config.settings.topP,
         maxOutputTokens: config.settings.maxTokens,
-        injectDefaultMetadata: config.globalSettings.injectDefaultMetadata,
         useProxy: config.providerSetting.useProxy || false,
         stream: config.settings.stream,
         customFetch:

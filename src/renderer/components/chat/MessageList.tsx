@@ -2,6 +2,7 @@ import NiceModal from '@ebay/nice-modal-react'
 import { ActionIcon, Button, Flex, Stack, Text, Transition } from '@mantine/core'
 import { useThrottledCallback } from '@mantine/hooks'
 import type { Session, Message as SessionMessage, SessionThreadBrief } from '@shared/types'
+import { getMessageText } from '@shared/utils/message'
 import {
   IconAlignRight,
   IconArrowBarToUp,
@@ -32,6 +33,7 @@ import { type StateSnapshot, Virtuoso, type VirtuosoHandle } from 'react-virtuos
 import { platformTypeAtom } from '@/hooks/useNeedRoomForWinControls'
 import { useIsSmallScreen } from '@/hooks/useScreenChange'
 import { cn } from '@/lib/utils'
+import platform from '@/platform'
 import * as atoms from '@/stores/atoms'
 import {
   deleteFork,
@@ -50,9 +52,13 @@ import ActionMenu from '../ActionMenu'
 import { ErrorBoundary } from '../common/ErrorBoundary'
 import { ScalableIcon } from '../common/ScalableIcon'
 import { BlockCodeCollapsedStateProvider } from '../Markdown'
+import ForkMarkerMessage from './ForkMarkerMessage'
 import Message from './Message'
+import MessageMinimapRail, { type MessageMinimapAnchor } from './MessageMinimapRail'
 import MessageNavigation, { ScrollToBottomButton } from './MessageNavigation'
+import { isUserNavigationMessage } from './message-navigation-utils'
 import SummaryMessage from './SummaryMessage'
+import { createSmoothFollowOutputController } from './smooth-follow-output'
 
 // LRU-like cache with max size to prevent unbounded memory growth
 const MAX_SCROLL_CACHE_SIZE = 100
@@ -136,7 +142,8 @@ const MessageList = forwardRef<MessageListRef, MessageListProps>((props, ref) =>
       latestUserIndex >= 0 &&
       (latestUserIndex === currentMessageList.length - 1 ||
         (latestUserIndex + 1 < currentMessageList.length &&
-          currentMessageList[latestUserIndex + 1].role === 'assistant'))
+          currentMessageList[latestUserIndex + 1].role === 'assistant' &&
+          !currentMessageList[latestUserIndex + 1].isForkMarker))
 
     const items: MessageRenderItem[] = []
 
@@ -169,7 +176,46 @@ const MessageList = forwardRef<MessageListRef, MessageListProps>((props, ref) =>
     return items
   }, [currentMessageList])
 
+  const userMessageAnchors = useMemo<MessageMinimapAnchor[]>(() => {
+    const assistantTextByUserId = new Map<string, string>()
+
+    for (let i = 0; i < currentMessageList.length; i++) {
+      const message = currentMessageList[i]
+      if (!isUserNavigationMessage(message)) {
+        continue
+      }
+
+      for (let j = i + 1; j < currentMessageList.length; j++) {
+        const nextMessage = currentMessageList[j]
+        if (nextMessage.role === 'user') {
+          break
+        }
+        if (nextMessage.role === 'assistant' && !nextMessage.isSummary && !nextMessage.isForkMarker) {
+          assistantTextByUserId.set(message.id, getMessageText(nextMessage, true, false).trim())
+          break
+        }
+      }
+    }
+
+    return renderItems.flatMap((item, itemIndex) =>
+      item.messages.filter(isUserNavigationMessage).map((message) => ({
+        messageId: message.id,
+        itemIndex,
+        text: getMessageText(message, true, false).trim(),
+        assistantText: assistantTextByUserId.get(message.id),
+      }))
+    )
+  }, [currentMessageList, renderItems])
+  const showMinimap = !isSmallScreen && userMessageAnchors.length > 0
+
   const virtuoso = useRef<VirtuosoHandle>(null)
+  const [smoothFollowOutput] = useState(() =>
+    createSmoothFollowOutputController({
+      scrollToBottom: (behavior) => virtuoso.current?.scrollTo({ top: Infinity, behavior }),
+      // Mobile WebViews can fall behind when a smooth scroll is retargeted on every streaming height change.
+      getScrollBehavior: platform.type === 'mobile' ? () => 'auto' : undefined,
+    })
+  )
   const messageListRef = useRef<HTMLDivElement>(null)
   const [messageViewportHeight, setMessageViewportHeight] = useState(0)
   const [isNewMessage, setIsNewMessage] = useState(false)
@@ -182,14 +228,25 @@ const MessageList = forwardRef<MessageListRef, MessageListProps>((props, ref) =>
   const handleMessageNavigationVisibleChanged = useCallback((v: boolean) => setMessageNavigationVisible(v), [])
 
   const handleScrollToTop = useCallback(() => {
+    smoothFollowOutput.pause()
     virtuoso.current?.scrollToIndex({ index: 0, align: 'start', behavior: 'smooth' })
-  }, [])
+  }, [smoothFollowOutput])
 
   const handleScrollToBottom = useCallback(() => {
+    smoothFollowOutput.resume()
     virtuoso.current?.scrollTo({ top: Infinity, behavior: 'smooth' })
-  }, [])
+  }, [smoothFollowOutput])
+
+  const handleMinimapJump = useCallback(
+    (anchor: MessageMinimapAnchor) => {
+      smoothFollowOutput.pause()
+      virtuoso.current?.scrollToIndex({ index: anchor.itemIndex, align: 'start', behavior: 'smooth' })
+    },
+    [smoothFollowOutput]
+  )
 
   const handleScrollToPrev = useCallback(() => {
+    smoothFollowOutput.pause()
     if (messageListRef?.current && virtuoso?.current) {
       const containerRect = messageListRef.current.getBoundingClientRect()
       for (let i = 0; i < renderItems.length; i++) {
@@ -207,7 +264,7 @@ const MessageList = forwardRef<MessageListRef, MessageListProps>((props, ref) =>
             // If the current element's top is scrolled above the viewport and it
             // contains a user message (e.g. a long assistant response in a group),
             // scroll to the top of THIS element first to bring the question back.
-            if (rect.top < containerRect.top - 2 && renderItems[i].messages.some((msg) => msg.role === 'user')) {
+            if (rect.top < containerRect.top - 2 && renderItems[i].messages.some(isUserNavigationMessage)) {
               virtuoso.current.scrollToIndex({
                 index: i,
                 align: 'start',
@@ -217,7 +274,7 @@ const MessageList = forwardRef<MessageListRef, MessageListProps>((props, ref) =>
               return
             }
             for (let j = i - 1; j >= 0; j--) {
-              if (renderItems[j].messages.some((msg) => msg.role === 'user')) {
+              if (renderItems[j].messages.some(isUserNavigationMessage)) {
                 virtuoso.current.scrollToIndex({
                   index: j,
                   align: 'start',
@@ -234,9 +291,10 @@ const MessageList = forwardRef<MessageListRef, MessageListProps>((props, ref) =>
         }
       }
     }
-  }, [renderItems, isSmallScreen])
+  }, [renderItems, isSmallScreen, smoothFollowOutput])
 
   const handleScrollToNext = useCallback(() => {
+    smoothFollowOutput.pause()
     if (messageListRef?.current && virtuoso?.current) {
       const containerRect = messageListRef.current.getBoundingClientRect()
       for (let i = 0; i < renderItems.length; i++) {
@@ -249,7 +307,7 @@ const MessageList = forwardRef<MessageListRef, MessageListProps>((props, ref) =>
           // +2 tolerance: see handleScrollToPrev comment
           if (rect.bottom > containerRect.top + 2) {
             for (let j = i + 1; j < renderItems.length; j++) {
-              if (renderItems[j].messages.some((msg) => msg.role === 'user')) {
+              if (renderItems[j].messages.some(isUserNavigationMessage)) {
                 virtuoso.current.scrollToIndex({ index: j, align: 'start', behavior: 'smooth' })
                 return
               }
@@ -261,7 +319,7 @@ const MessageList = forwardRef<MessageListRef, MessageListProps>((props, ref) =>
         }
       }
     }
-  }, [renderItems])
+  }, [renderItems, smoothFollowOutput])
 
   const [atBottom, setAtBottom] = useState(false)
   const [atTop, setAtTop] = useState(false)
@@ -301,11 +359,15 @@ const MessageList = forwardRef<MessageListRef, MessageListProps>((props, ref) =>
   const handleScroll = useCallback<UIEventHandler>(
     (e) => {
       const scrollTop = e.currentTarget.scrollTop
+      const maxScrollTop = e.currentTarget.scrollHeight - e.currentTarget.clientHeight
+      if (smoothFollowOutput.handleScroll(scrollTop, maxScrollTop)) {
+        setAtBottom(false)
+      }
       if (e.currentTarget.scrollHeight - (scrollTop + e.currentTarget.clientHeight) >= 0) {
         handleScrollTopThrottled(scrollTop)
       }
     },
-    [handleScrollTopThrottled]
+    [handleScrollTopThrottled, smoothFollowOutput]
   )
   // message navigation handlers end
 
@@ -326,6 +388,10 @@ const MessageList = forwardRef<MessageListRef, MessageListProps>((props, ref) =>
   useEffect(() => {
     setMessageListElement(messageListRef)
   }, [])
+
+  useEffect(() => {
+    return () => smoothFollowOutput.dispose()
+  }, [smoothFollowOutput])
 
   useEffect(() => {
     const element = messageListRef.current
@@ -367,7 +433,12 @@ const MessageList = forwardRef<MessageListRef, MessageListProps>((props, ref) =>
             <ThreadLabel thread={currentThreadHash[msg.id]} sessionId={currentSession.id} />
           )}
           <ErrorBoundary name={`message-item`}>
-            {msg.isSummary ? (
+            {msg.isForkMarker ? (
+              <ForkMarkerMessage
+                sourceSessionId={msg.forkedFromSessionId}
+                className={options.isFirstItem ? 'pt-4' : options.isLastItem ? '!pb-4' : ''}
+              />
+            ) : msg.isSummary ? (
               <SummaryMessage
                 msg={msg}
                 className={options.isFirstItem ? 'pt-4' : options.isLastItem ? '!pb-4' : ''}
@@ -401,21 +472,31 @@ const MessageList = forwardRef<MessageListRef, MessageListProps>((props, ref) =>
   )
 
   useImperativeHandle(ref, () => ({
-    scrollToTop: (behavior = 'auto') => virtuoso.current?.scrollTo({ top: 0, behavior }),
-    scrollToBottom: (behavior = 'auto') => virtuoso.current?.scrollTo({ top: Infinity, behavior }),
+    scrollToTop: (behavior = 'auto') => {
+      smoothFollowOutput.pause()
+      virtuoso.current?.scrollTo({ top: 0, behavior })
+    },
+    scrollToBottom: (behavior = 'auto') => {
+      smoothFollowOutput.resume()
+      virtuoso.current?.scrollTo({ top: Infinity, behavior })
+    },
     setIsNewMessage: (value: boolean) => setIsNewMessage(value),
   }))
 
   return (
     <div className={cn('w-full h-full mx-auto', props.className)}>
       <BlockCodeCollapsedStateProvider defaultCollapsed={!!settingsStore.getState().autoCollapseCodeBlock}>
-        <div className="overflow-hidden h-full pr-0 pl-1 sm:pl-0 relative" ref={messageListRef}>
+        <div
+          className={cn('overflow-hidden h-full pr-0 relative', showMinimap ? 'pl-[28px]' : 'pl-1 sm:pl-0')}
+          ref={messageListRef}
+        >
+          {/* Virtuoso smooths appended items but snaps same-item height growth; the controller below owns both cases. */}
           <Virtuoso
             style={{ scrollbarGutter: 'stable' }}
             className={platformType === 'win32' ? 'scrollbar-custom' : ''}
             data={renderItems}
             ref={virtuoso}
-            followOutput="smooth"
+            followOutput={false}
             {...(sessionScrollPositionCache.has(currentSession.id)
               ? {
                   restoreStateFrom: sessionScrollPositionCache.get(currentSession.id),
@@ -459,9 +540,17 @@ const MessageList = forwardRef<MessageListRef, MessageListProps>((props, ref) =>
               )
             }}
             atTopStateChange={setAtTop}
-            atBottomStateChange={setAtBottom}
+            atBottomStateChange={(nextAtBottom) => {
+              if (nextAtBottom) {
+                smoothFollowOutput.resume()
+              }
+              setAtBottom(nextAtBottom || smoothFollowOutput.isFollowing())
+            }}
+            totalListHeightChanged={smoothFollowOutput.handleHeightChange}
             onScroll={handleScroll}
           />
+
+          {showMinimap && <MessageMinimapRail anchors={userMessageAnchors} onJump={handleMinimapJump} />}
 
           {!isSmallScreen ? (
             <MessageNavigation

@@ -264,7 +264,6 @@ const KnowledgeBasePage: React.FC = () => {
         return 'Chatbox AI'
       case 'mineru':
         return 'MinerU'
-      case 'local':
       default:
         return t('Local')
     }
@@ -283,7 +282,7 @@ const KnowledgeBasePage: React.FC = () => {
   }, [knowledgeBaseController, isUnsupportedPlatform, t])
 
   useEffect(() => {
-    fetchKbList()
+    void fetchKbList()
   }, [fetchKbList])
 
   // Check platform compatibility
@@ -298,7 +297,7 @@ const KnowledgeBasePage: React.FC = () => {
         console.error('Failed to check platform compatibility:', error)
       }
     }
-    checkPlatform()
+    void checkPlatform()
   }, [])
 
   // Fetch Chatbox AI models configuration
@@ -313,7 +312,7 @@ const KnowledgeBasePage: React.FC = () => {
         toastError(t('Failed to fetch Chatbox AI models config, Error: {{error}}', { error: error }))
       }
     }
-    fetchChatboxAIModels()
+    void fetchChatboxAIModels()
   }, [t])
 
   const createKb = async () => {
@@ -368,7 +367,7 @@ const KnowledgeBasePage: React.FC = () => {
       setNewVisionModel(null)
       setNewDocumentParser({ type: 'local' })
       setShowCreate(false)
-      fetchKbList()
+      await fetchKbList()
     } catch (e) {
       toastError(t('Failed to create knowledge base, Error: {{error}}', { error: e }))
     }
@@ -393,7 +392,7 @@ const KnowledgeBasePage: React.FC = () => {
       setEditKb(null)
       setEditRerankModel(null)
       setEditVisionModel(null)
-      fetchKbList()
+      await fetchKbList()
     } catch (e) {
       toastError(t('Failed to update knowledge base, Error: {{error}}', { error: e }))
     }
@@ -405,7 +404,7 @@ const KnowledgeBasePage: React.FC = () => {
       await knowledgeBaseController.delete(deleteConfirmKb.id)
       setDeleteConfirmKb(null)
       setEditKb(null) // Close edit modal if it's open
-      fetchKbList()
+      await fetchKbList()
     } catch (error) {
       console.error('Failed to delete knowledge base:', error)
     }

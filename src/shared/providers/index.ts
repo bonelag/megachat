@@ -3,6 +3,7 @@ import { enrichModelFromRegistry } from '../model-registry/enrich'
 import { mergeSharedOAuthProviderSettings, resolveEffectiveApiKey } from '../oauth'
 import type { Config, ProviderModelInfo, ProviderSettings, SessionSettings, Settings } from '../types'
 import type { ModelDependencies } from '../types/adapters'
+import { apiStyleFromProviderType } from './api-style'
 // ChatboxAI must be imported first to ensure it appears at the top of provider lists
 // Import order determines display order in UI (side-effect registration into Map)
 import './definitions/chatboxai'
@@ -116,7 +117,23 @@ function getModelConfig(settings: SessionSettings, globalSettings: Settings, pro
 
   // Enrich with registry metadata (capabilities, contextWindow, maxOutput)
   // so model instances have accurate data for capability checks.
-  return enrichModelFromRegistry(model, provider)
+  // Stamp the resolving provider id so model instances can evaluate reasoning-control
+  // support using the same provider+model-id logic as the UI.
+  return { ...enrichModelFromRegistry(model, provider), providerId: provider }
+}
+
+/**
+ * Fills `model.apiStyle` from the provider's type when the model does not carry one,
+ * mirroring the renderer's `withProviderApiStyleFallback`. This lets reasoning-control
+ * support be judged by API style + model id for providers that proxy upstream models
+ * (custom providers and built-in proxies like github-copilot whose id carries no
+ * reasoning semantics). For built-in providers that resolve reasoning by their own id,
+ * apiStyle is ignored, so stamping it is a harmless no-op.
+ */
+function withReasoningApiStyle(model: ProviderModelInfo, providerType: string | undefined): ProviderModelInfo {
+  if (model.apiStyle) return model
+  const apiStyle = apiStyleFromProviderType(providerType)
+  return apiStyle ? { ...model, apiStyle } : model
 }
 
 /**
@@ -145,7 +162,7 @@ export function getModel(
   if (providerDefinition) {
     // Provider is registered - use the new registry-based approach
     const { providerSetting, formattedApiHost, providerBaseInfo } = getProviderSettings(settings, globalSettings)
-    const model = getModelConfig(settings, globalSettings, provider)
+    const model = withReasoningApiStyle(getModelConfig(settings, globalSettings, provider), providerBaseInfo.type)
     const formattedApiPath = providerSetting.apiPath || providerBaseInfo.defaultSettings?.apiPath || ''
     const effectiveApiKey = resolveEffectiveApiKey(providerSetting, dependencies.platformType || 'desktop')
 
@@ -166,7 +183,7 @@ export function getModel(
 
   // Provider not registered - check if it's a custom provider
   const { providerSetting, formattedApiHost, providerBaseInfo } = getProviderSettings(settings, globalSettings)
-  const model = getModelConfig(settings, globalSettings, provider)
+  const model = withReasoningApiStyle(getModelConfig(settings, globalSettings, provider), providerBaseInfo.type)
 
   if (providerBaseInfo.isCustom) {
     const formattedApiPath = providerSetting.apiPath || providerBaseInfo.defaultSettings?.apiPath || ''

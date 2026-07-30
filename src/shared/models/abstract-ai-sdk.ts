@@ -8,11 +8,14 @@ import {
   type JSONValue,
   type LanguageModelUsage,
   type ModelMessage,
+  type PrepareStepFunction,
   type Provider,
+  type ProviderMetadata,
   simulateStreamingMiddleware,
   stepCountIs,
   streamText,
   type TextStreamPart,
+  type ToolCallRepairFunction,
   type ToolSet,
   type TypedToolCall,
   type TypedToolError,
@@ -29,7 +32,12 @@ import type {
   StreamTextResult,
 } from '../types'
 import type { ModelDependencies } from '../types/adapters'
+import { getReasoningControlCapabilities, stripReasoningProviderOptions } from '../utils/reasoning-control'
+import { isExpectedGenerationError } from './error-classification'
 import { ApiError, ChatboxAIAPIError } from './errors'
+import { wrapOpenAICompatibleNonStreamingModel } from './openai-compatible-non-streaming'
+import { stopWhenPersistentToolCallPause } from './persistent-tool-call-pause'
+import { repairToolCallJson } from './tool-call-json-repair'
 import type {
   CallChatCompletionOptions,
   ChatStreamOptions,
@@ -128,12 +136,17 @@ interface ToolExecutionResult {
   toolCallId: string
   result: unknown
   isError?: boolean
+  providerMetadata?: ProviderMetadata
 }
 
 export default abstract class AbstractAISDKModel implements ModelInterface {
   public name = 'AI SDK Model'
   public injectDefaultMetadata = true
   public modelId = ''
+
+  public get apiStyle(): ProviderModelInfo['apiStyle'] {
+    return this.options.model.apiStyle
+  }
 
   public isSupportToolUse() {
     return this.options.model.capabilities?.includes('tool_use') || false
@@ -162,6 +175,19 @@ export default abstract class AbstractAISDKModel implements ModelInterface {
 
   protected abstract getChatModel(options: CallChatCompletionOptions): LanguageModelV3
 
+  private prepareChatModel(model: LanguageModelV3): LanguageModelV3 {
+    if (this.options.stream !== false) return model
+
+    if (this.apiStyle === 'openai') {
+      return wrapOpenAICompatibleNonStreamingModel(model)
+    }
+
+    return wrapLanguageModel({
+      model,
+      middleware: simulateStreamingMiddleware(),
+    })
+  }
+
   protected getImageModel(): ImageModel | null {
     return null
   }
@@ -180,6 +206,25 @@ export default abstract class AbstractAISDKModel implements ModelInterface {
 
   protected getCallSettings(_options: CallChatCompletionOptions): CallSettings {
     return {}
+  }
+
+  // Resolves call settings while ensuring reasoning provider options are never sent
+  // to a model that does not support reasoning control. Stale options can linger on a
+  // session after switching from a reasoning-capable model, so we strip them at the
+  // request edge using the same provider + hard-coded model-id logic as the UI control
+  // (the generic `reasoning` capability flag is unreliable — some reasoning models, e.g.
+  // qwen3.x, ship without it in their registry metadata). When the provider is unknown we
+  // leave options untouched to avoid stripping anything we cannot positively classify.
+  private resolveCallSettings(options: CallChatCompletionOptions): CallSettings {
+    const providerId = this.options.model.providerId
+    const shouldStrip =
+      !!providerId &&
+      !!options.providerOptions &&
+      !getReasoningControlCapabilities(providerId, this.options.model).supported
+    const sanitizedOptions = shouldStrip
+      ? { ...options, providerOptions: stripReasoningProviderOptions(options.providerOptions) }
+      : options
+    return this.getCallSettings(sanitizedOptions)
   }
 
   public async chat(messages: ModelMessage[], options: CallChatCompletionOptions): Promise<StreamTextResult> {
@@ -203,13 +248,23 @@ export default abstract class AbstractAISDKModel implements ModelInterface {
         }
       }
 
-      // 添加请求信息到 Sentry
-      this.dependencies.sentry.withScope((scope) => {
-        scope.setTag('provider_name', this.name)
-        scope.setExtra('messages', JSON.stringify(messages))
-        scope.setExtra('options', JSON.stringify(options))
-        this.dependencies.sentry.captureException(e)
-      })
+      // Provider/API/network failures are expected user-facing outcomes. Report only
+      // unexpected client/runtime failures, and never attach prompts or request options.
+      if (!isExpectedGenerationError(e)) {
+        const providerId = this.options.model.providerId
+        const providerTag = providerId?.startsWith('custom-provider-') ? 'custom' : providerId || 'unknown'
+        this.dependencies.sentry.withScope((scope) => {
+          scope.setTag('component', 'ai-provider')
+          scope.setTag('operation', 'chat_completion')
+          scope.setTag('error_domain', 'ai-provider')
+          scope.setTag('error_operation', 'chat_completion')
+          scope.setTag('error_priority', 'high')
+          scope.setTag('error_handled', 'true')
+          scope.setTag('provider_name', providerTag)
+          scope.setExtra('messageCount', messages.length)
+          this.dependencies.sentry.captureException(e)
+        })
+      }
       throw e
     }
   }
@@ -218,15 +273,8 @@ export default abstract class AbstractAISDKModel implements ModelInterface {
     messages: ModelMessage[],
     options: ChatStreamOptions
   ): AsyncGenerator<ModelStreamPart<T>> {
-    let baseModel = this.getChatModel(options)
-    const callSettings = this.getCallSettings(options)
-
-    if (this.options.stream === false) {
-      baseModel = wrapLanguageModel({
-        model: baseModel,
-        middleware: simulateStreamingMiddleware(),
-      })
-    }
+    const baseModel = this.prepareChatModel(this.getChatModel(options))
+    const callSettings = this.resolveCallSettings(options)
 
     const statusQueue = new StatusQueue()
 
@@ -279,8 +327,10 @@ export default abstract class AbstractAISDKModel implements ModelInterface {
     const result = streamText({
       model,
       messages,
-      stopWhen: stepCountIs(options.maxSteps || Number.MAX_SAFE_INTEGER),
+      stopWhen: [stepCountIs(options.maxSteps || Number.MAX_SAFE_INTEGER), stopWhenPersistentToolCallPause<T>()],
       tools: options.tools as T | undefined,
+      prepareStep: options.prepareStep as PrepareStepFunction<T> | undefined,
+      experimental_repairToolCall: repairToolCallJson as ToolCallRepairFunction<T>,
       abortSignal: options.signal,
       ...callSettings,
       // Billable POST retries are handled explicitly by the `ai-retry` wrapper above
@@ -405,6 +455,8 @@ export default abstract class AbstractAISDKModel implements ModelInterface {
           toolCallId: toolCall.toolCallId,
           toolName: toolCall.toolName,
           args,
+          providerMetadata: toolCall.providerMetadata,
+          providerExecuted: toolCall.providerExecuted,
         },
         contentParts,
         options
@@ -422,6 +474,7 @@ export default abstract class AbstractAISDKModel implements ModelInterface {
       const mappedResult: ToolExecutionResult = {
         toolCallId: toolResult.toolCallId,
         result,
+        providerMetadata: toolResult.providerMetadata,
       }
       this.updateToolResultPart(mappedResult, contentParts)
       options.onResultChange?.({ contentParts })
@@ -434,6 +487,21 @@ export default abstract class AbstractAISDKModel implements ModelInterface {
     options: CallChatCompletionOptions
   ): void {
     for (const toolError of toolErrors) {
+      const existing = contentParts.find(
+        (part): part is MessageToolCallPart => part.type === 'tool-call' && part.toolCallId === toolError.toolCallId
+      )
+      if (!existing) {
+        contentParts.push({
+          type: 'tool-call',
+          state: 'call',
+          toolCallId: toolError.toolCallId,
+          toolName: toolError.toolName,
+          args: toolError.input,
+          providerMetadata: toolError.providerMetadata,
+          providerExecuted: toolError.providerExecuted,
+        })
+      }
+
       const serializedError =
         toolError.error instanceof Error
           ? {
@@ -450,6 +518,7 @@ export default abstract class AbstractAISDKModel implements ModelInterface {
           toolName: toolError.toolName,
         },
         isError: true,
+        providerMetadata: existing ? toolError.providerMetadata : undefined,
       }
       this.updateToolResultPart(mappedResult, contentParts)
       options.onResultChange?.({ contentParts })
@@ -479,9 +548,11 @@ export default abstract class AbstractAISDKModel implements ModelInterface {
           }
         }
         toolCallPart.state = 'error'
+        toolCallPart.resultProviderMetadata = toolResult.providerMetadata
       } else {
         toolCallPart.state = 'result'
         toolCallPart.result = toolResult.result
+        toolCallPart.resultProviderMetadata = toolResult.providerMetadata
       }
     }
   }
@@ -594,7 +665,6 @@ export default abstract class AbstractAISDKModel implements ModelInterface {
         finalizeReasoningDuration()
         this.processToolErrors([chunk], contentParts, _options)
         break
-
       case 'file':
         if (chunk.file.mediaType?.startsWith('image/') && chunk.file.base64) {
           await this.processImageFile(chunk.file.mediaType, chunk.file.base64, contentParts)
@@ -691,8 +761,9 @@ export default abstract class AbstractAISDKModel implements ModelInterface {
     const result = streamText({
       model,
       messages: coreMessages,
-      stopWhen: stepCountIs(options.maxSteps || Number.MAX_SAFE_INTEGER),
+      stopWhen: [stepCountIs(options.maxSteps || Number.MAX_SAFE_INTEGER), stopWhenPersistentToolCallPause<T>()],
       tools: options.tools,
+      experimental_repairToolCall: repairToolCallJson as ToolCallRepairFunction<T>,
       abortSignal: options.signal,
       ...callSettings,
       // Billable POST retries are handled explicitly by the `ai-retry` wrapper in
@@ -751,15 +822,8 @@ export default abstract class AbstractAISDKModel implements ModelInterface {
     coreMessages: ModelMessage[],
     options: CallChatCompletionOptions<T>
   ): Promise<StreamTextResult> {
-    let baseModel = this.getChatModel(options)
-    const callSettings = this.getCallSettings(options)
-
-    if (this.options.stream === false) {
-      baseModel = wrapLanguageModel({
-        model: baseModel,
-        middleware: simulateStreamingMiddleware(),
-      })
-    }
+    const baseModel = this.prepareChatModel(this.getChatModel(options))
+    const callSettings = this.resolveCallSettings(options)
 
     const retryableStatusAttempt = (context: RetryContext<LanguageModelV3>) => {
       if (isErrorAttempt(context.current)) {

@@ -8,6 +8,7 @@ export type GuideToolName =
   | 'show_provider_settings_button'
   | 'show_user_type_cards'
   | 'show_new_chat_button'
+  | 'show_auto_new_chat_loading'
   | 'show_new_chat_tip'
   | 'show_view_license_button'
   | 'show_suggested_questions'

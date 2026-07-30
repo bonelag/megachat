@@ -1,9 +1,12 @@
+import { Group, Text } from '@mantine/core'
 import { Typography } from '@mui/material'
 import type { Message } from '@shared/types'
+import { IconLoader } from '@tabler/icons-react'
 import { useAtomValue } from 'jotai'
 import { Loader } from 'lucide-react'
 import { Trans, useTranslation } from 'react-i18next'
 import { buildChatboxUrl } from '@/packages/remote'
+import { getToolName } from '@/packages/tools'
 import * as atoms from '@/stores/atoms'
 import * as settingActions from '@/stores/settingActions'
 import LinkTargetBlank from '../common/Link'
@@ -93,7 +96,44 @@ function MessageStatus(props: { status: NonNullable<Message['status']>[number] }
   if (status.type === 'retrying') {
     return <RetryingIndicator attempt={status.attempt} maxAttempts={status.maxAttempts} />
   }
+  if (status.type === 'preparing_tool_call') {
+    return <PreparingToolCallStatus status={status} />
+  }
   return null
+}
+
+export function PreparingToolCallStatus(props: {
+  status: Extract<NonNullable<Message['status']>[number], { type: 'preparing_tool_call' }>
+}) {
+  const { status } = props
+  const { t } = useTranslation()
+  const label = status.toolName ? `${t('Preparing')} ${getToolName(status.toolName)}` : t('Preparing tool call')
+  const progress = formatPreparingProgress(status.progress, t)
+
+  return (
+    <Group gap={6} align="center" wrap="nowrap" mt={6} mb={2} className="max-w-full">
+      <IconLoader
+        size={13}
+        className="animate-spin shrink-0"
+        color="var(--chatbox-tint-brand)"
+        style={{ display: 'block' }}
+      />
+      <Text size="xs" c="chatbox-secondary" lh="16px" truncate="end">
+        {progress ? `${label} · ${progress}` : label}
+      </Text>
+    </Group>
+  )
+}
+
+function formatPreparingProgress(
+  progress: Extract<NonNullable<Message['status']>[number], { type: 'preparing_tool_call' }>['progress'],
+  t: ReturnType<typeof useTranslation>['t']
+): string | null {
+  if (!progress) return null
+  if (progress.kind === 'lines') {
+    return t('{{count}} lines', { count: progress.value })
+  }
+  return `${progress.value.toFixed(1)} KB`
 }
 
 function RetryingIndicator(props: { attempt: number; maxAttempts: number }) {

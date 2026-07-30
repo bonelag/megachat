@@ -33,6 +33,7 @@ interface MobileModelSelectorProps {
   onSearchChange: (search: string) => void
   onOptionSubmit: (val: string) => void
   modelFilter?: (model: ProviderModelInfo, providerId?: string) => boolean
+  modelDisabledCheck?: (model: ProviderModelInfo, providerId?: string) => string | undefined
 }
 
 export const MobileModelSelector = forwardRef<HTMLDivElement, MobileModelSelectorProps>(
@@ -50,6 +51,7 @@ export const MobileModelSelector = forwardRef<HTMLDivElement, MobileModelSelecto
       onSearchChange,
       onOptionSubmit,
       modelFilter,
+      modelDisabledCheck,
     },
     _ref
   ) => {
@@ -116,6 +118,7 @@ export const MobileModelSelector = forwardRef<HTMLDivElement, MobileModelSelecto
                     isFavorited={true}
                     isSelected={selectedProviderId === fm.provider.id && selectedModelId === fm.model.modelId}
                     hideFavoriteIcon={true}
+                    disabledReason={fm.model ? modelDisabledCheck?.(fm.model, fm.provider.id) : undefined}
                     onSelect={() => {
                       if (fm.provider && fm.model) {
                         handleOptionSubmit(`${fm.provider.id}/${fm.model.modelId}`)
@@ -227,6 +230,7 @@ export const MobileModelSelector = forwardRef<HTMLDivElement, MobileModelSelecto
                                     model={model}
                                     isFavorited={isFavorited}
                                     isSelected={selectedProviderId === provider.id && selectedModelId === model.modelId}
+                                    disabledReason={modelDisabledCheck?.(model, provider.id)}
                                     onSelect={() => {
                                       handleOptionSubmit(`${provider.id}/${model.modelId}`)
                                     }}

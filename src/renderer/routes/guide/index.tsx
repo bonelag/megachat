@@ -16,9 +16,9 @@ import {
   Title,
   UnstyledButton,
 } from '@mantine/core'
-import WindowControls from '@/components/layout/WindowControls'
 import type { Language } from '@shared/types'
 import {
+  IconArrowUp,
   IconBug,
   IconCheck,
   IconChevronRight,
@@ -27,17 +27,18 @@ import {
   IconMenu2,
   IconPlayerSkipForward,
   IconPlayerStopFilled,
-  IconArrowUp,
   IconRefresh,
   IconUserCheck,
 } from '@tabler/icons-react'
 import { createFileRoute, useBlocker } from '@tanstack/react-router'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import Divider from '@/components/common/Divider'
 import { ScalableIcon } from '@/components/common/ScalableIcon'
 import Disclaimer from '@/components/Disclaimer'
 import ProviderImageIcon from '@/components/icons/ProviderImageIcon'
+import WindowControls from '@/components/layout/WindowControls'
+import { getShowGuideDevButtonsFlag } from '@/dev/devToolsFlags'
 import useNeedRoomForWinControls from '@/hooks/useNeedRoomForWinControls'
 import { useIsSmallScreen } from '@/hooks/useScreenChange'
 import { languageNameMap, languages } from '@/i18n/locales'
@@ -80,7 +81,7 @@ function GuidePage() {
 
   const { needRoomForMacWindowControls } = useNeedRoomForWinControls()
   const isSmallScreen = useIsSmallScreen()
-  const showDebug = useMemo(() => new URLSearchParams(window.location.search).get('debug') === 'true', [])
+  const showDebug = getShowGuideDevButtonsFlag()
   const showSidebar = useUIStore((s) => s.showSidebar)
   const setShowSidebar = useUIStore((s) => s.setShowSidebar)
 
@@ -167,14 +168,15 @@ function GuidePage() {
   const { proceed, reset, status } = useBlocker({
     condition: isGuideInProgress && !hasValidConfig && onboardingStep !== 'completed',
   })
+  const showInputArea = onboardingStep === 'completed' && canSendMessage
 
   // Handle send message
   const handleSend = useCallback(() => {
     const trimmed = inputValue.trim()
-    if (!trimmed || isLoading) return
+    if (!trimmed || isLoading || !canSendMessage) return
     setInputValue('')
     sendMessage(trimmed)
-  }, [inputValue, isLoading, sendMessage])
+  }, [inputValue, isLoading, canSendMessage, sendMessage])
 
   // Handle keyboard shortcuts
   const handleKeyDown = useCallback(
@@ -270,7 +272,7 @@ function GuidePage() {
           {showDebug && (
             <Menu position="bottom-end" shadow="md">
               <Menu.Target>
-                <ActionIcon variant="subtle" size="sm" style={{ opacity: 0 }}>
+                <ActionIcon variant="subtle" size="sm" aria-label="Guide debug actions">
                   <ScalableIcon icon={IconBug} size={16} />
                 </ActionIcon>
               </Menu.Target>
@@ -303,7 +305,7 @@ function GuidePage() {
 
       {/* Messages */}
       <ScrollArea viewportRef={viewportRef} className="flex-1" type="scroll">
-        <Stack gap={0} py="md" maw={800} mx="auto">
+        <Stack gap={0} pt="md" pb="md" mb={showInputArea ? 0 : 120} maw={800} mx="auto">
           {messages.map((message, index) => (
             <GuideMessage
               key={message.id}
@@ -328,98 +330,93 @@ function GuidePage() {
         </Stack>
       </ScrollArea>
 
-      {/* Input Area - matches chat session InputBox styling */}
-      <Box px="sm" pb="md" pt="sm" className="flex-shrink-0">
-        <Stack gap="xs" maw="56rem" mx="auto">
-          <Stack
-            className="bg-chatbox-background-secondary rounded-md p-3"
-            style={{ border: '1px solid var(--chatbox-border-primary)' }}
-            gap="xs"
-          >
-            {/* Input Row */}
-            <Flex align="flex-end" gap={4}>
-              <Textarea
-                ref={textareaRef}
-                unstyled={true}
-                classNames={{
-                  root: 'flex-1',
-                  wrapper: 'flex-1',
-                  input:
-                    'block w-full outline-none border-none px-2 py-1 resize-none bg-transparent text-chatbox-tint-primary',
-                }}
-                size="sm"
-                value={inputValue}
-                onChange={(e) => setInputValue(e.target.value)}
-                onKeyDown={handleKeyDown}
-                placeholder={
-                  canSendMessage
-                    ? t('Type your question here...') || ''
-                    : hasValidConfig
-                      ? t('Chatbox is ready. To save resources, please start a new chat to continue.') || ''
-                      : t('Please complete setup to continue chatting') || ''
-                }
-                disabled={!canSendMessage || isLoading}
-                autosize
-                minRows={2}
-                maxRows={6}
-                autoFocus={!isSmallScreen}
-              />
+      {showInputArea && (
+        <Box px="sm" pb="md" pt="sm" className="flex-shrink-0">
+          <Stack gap="xs" maw="56rem" mx="auto">
+            <Stack
+              className="bg-chatbox-background-secondary rounded-md p-3"
+              style={{ border: '1px solid var(--chatbox-border-primary)' }}
+              gap="xs"
+            >
+              {/* Input Row */}
+              <Flex align="flex-end" gap={4}>
+                <Textarea
+                  ref={textareaRef}
+                  unstyled={true}
+                  classNames={{
+                    root: 'flex-1',
+                    wrapper: 'flex-1',
+                    input:
+                      'block w-full outline-none border-none px-2 py-1 resize-none bg-transparent text-chatbox-tint-primary',
+                  }}
+                  size="sm"
+                  value={inputValue}
+                  onChange={(e) => setInputValue(e.target.value)}
+                  onKeyDown={handleKeyDown}
+                  placeholder={t('Type your Chatbox AI-related question here') || ''}
+                  disabled={!canSendMessage || isLoading}
+                  autosize
+                  minRows={2}
+                  maxRows={6}
+                  autoFocus={!isSmallScreen}
+                />
 
-              {/* Send Button */}
-              <ActionIcon
-                disabled={(!inputValue.trim() || !canSendMessage) && !isLoading}
-                size={32}
-                variant="filled"
-                color={isLoading ? 'dark' : 'chatbox-brand'}
-                radius="xl"
-                onClick={isLoading ? stopGeneration : handleSend}
-                className={`shrink-0 mb-1 ${(!inputValue.trim() || !canSendMessage) && !isLoading ? 'disabled:!opacity-100 !text-white' : ''}`}
-                style={
-                  (!inputValue.trim() || !canSendMessage) && !isLoading
-                    ? { backgroundColor: 'rgba(222, 226, 230, 1)' }
-                    : undefined
-                }
-              >
-                {isLoading ? (
-                  <ScalableIcon icon={IconPlayerStopFilled} size={16} />
-                ) : (
-                  <ScalableIcon icon={IconArrowUp} size={16} />
-                )}
-              </ActionIcon>
-            </Flex>
+                {/* Send Button */}
+                <ActionIcon
+                  disabled={(!inputValue.trim() || !canSendMessage) && !isLoading}
+                  size={32}
+                  variant="filled"
+                  color={isLoading ? 'dark' : 'chatbox-brand'}
+                  radius="xl"
+                  onClick={isLoading ? stopGeneration : handleSend}
+                  className={`shrink-0 mb-1 ${(!inputValue.trim() || !canSendMessage) && !isLoading ? 'disabled:!opacity-100 !text-white' : ''}`}
+                  style={
+                    (!inputValue.trim() || !canSendMessage) && !isLoading
+                      ? { backgroundColor: 'rgba(222, 226, 230, 1)' }
+                      : undefined
+                  }
+                >
+                  {isLoading ? (
+                    <ScalableIcon icon={IconPlayerStopFilled} size={16} />
+                  ) : (
+                    <ScalableIcon icon={IconArrowUp} size={16} />
+                  )}
+                </ActionIcon>
+              </Flex>
 
-            {/* Bottom toolbar */}
-            <Flex justify="flex-end" align="center">
-              {/* Model Selector */}
-              <Menu position="top-end" shadow="md" transitionProps={{ transition: 'fade-up', duration: 200 }}>
-                <Menu.Target>
-                  <UnstyledButton className="flex items-center gap-1 px-2 py-1 rounded-lg hover:bg-[var(--chatbox-background-tertiary)] transition-colors">
-                    <ProviderImageIcon provider="chatbox-ai" size={18} />
-                    <Text size="sm" className="text-[var(--chatbox-tint-secondary)]">
+              {/* Bottom toolbar */}
+              <Flex justify="flex-end" align="center">
+                {/* Model Selector */}
+                <Menu position="top-end" shadow="md" transitionProps={{ transition: 'fade-up', duration: 200 }}>
+                  <Menu.Target>
+                    <UnstyledButton className="flex items-center gap-1 px-2 py-1 rounded-lg hover:bg-[var(--chatbox-background-tertiary)] transition-colors">
+                      <ProviderImageIcon provider="chatbox-ai" size={18} />
+                      <Text size="sm" className="text-[var(--chatbox-tint-secondary)]">
+                        Chatbox Guide
+                      </Text>
+                      <ScalableIcon
+                        icon={IconChevronRight}
+                        size={14}
+                        className="text-chatbox-tint-tertiary rotate-90 flex-shrink-0"
+                      />
+                    </UnstyledButton>
+                  </Menu.Target>
+                  <Menu.Dropdown>
+                    <Menu.Item
+                      leftSection={<ProviderImageIcon provider="chatbox-ai" size={16} />}
+                      rightSection={<ScalableIcon icon={IconCheck} size={14} className="text-chatbox-tint-brand" />}
+                    >
                       Chatbox Guide
-                    </Text>
-                    <ScalableIcon
-                      icon={IconChevronRight}
-                      size={14}
-                      className="text-chatbox-tint-tertiary rotate-90 flex-shrink-0"
-                    />
-                  </UnstyledButton>
-                </Menu.Target>
-                <Menu.Dropdown>
-                  <Menu.Item
-                    leftSection={<ProviderImageIcon provider="chatbox-ai" size={16} />}
-                    rightSection={<ScalableIcon icon={IconCheck} size={14} className="text-chatbox-tint-brand" />}
-                  >
-                    Chatbox Guide
-                  </Menu.Item>
-                </Menu.Dropdown>
-              </Menu>
-            </Flex>
-          </Stack>
+                    </Menu.Item>
+                  </Menu.Dropdown>
+                </Menu>
+              </Flex>
+            </Stack>
 
-          <Disclaimer />
-        </Stack>
-      </Box>
+            <Disclaimer />
+          </Stack>
+        </Box>
+      )}
 
       {/* Leave Confirmation Dialog */}
       {status === 'blocked' && (

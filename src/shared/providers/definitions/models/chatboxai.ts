@@ -1,25 +1,35 @@
-import { type AnthropicProviderOptions, createAnthropic } from '@ai-sdk/anthropic'
+import { createAnthropic } from '@ai-sdk/anthropic'
+import { createDeepSeek } from '@ai-sdk/deepseek'
 import {
   createGoogleGenerativeAI,
   type GoogleGenerativeAIProvider,
   type GoogleGenerativeAIProviderOptions,
 } from '@ai-sdk/google'
-import { buildGeminiImageConfig } from '../gemini-types'
 import { createOpenAI, type OpenAIProvider } from '@ai-sdk/openai'
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible'
 import { type ModelMessage, streamText, type ToolSet } from 'ai'
+import { getRegistryModelMeta } from '../../../model-registry'
 import AbstractAISDKModel, { type CallSettings } from '../../../models/abstract-ai-sdk'
 import { addAnthropicCacheControl } from '../../../models/anthropic-cache'
-import type { StreamTextResult } from '../../../types'
+import { getOpenAICompatibleProviderOptionsKey } from '../../../models/openai-compatible'
 import type {
   CallChatCompletionOptions,
   ChatStreamOptions,
   ModelInterface,
   ModelStreamPart,
 } from '../../../models/types'
+import { isDeepSeekReasoningModel, isDeepSeekWeakToolUse } from '../../../models/utils/deepseek'
 import { getChatboxAPIOrigin } from '../../../request/chatboxai_pool'
-import type { ChatboxAILicenseDetail, ProviderModelInfo } from '../../../types'
+import type { StreamTextResult, ToolUseScope } from '../../../types'
+import { type ChatboxAILicenseDetail, ModelProviderEnum, type ProviderModelInfo } from '../../../types'
 import type { ModelDependencies } from '../../../types/adapters'
+import {
+  getLegacyOpenAICompatibleThinkingType,
+  normalizeClaudeReasoningOptions,
+  normalizeOpenAIReasoningOptions,
+  pickOpenAICompatibleReasoningOptions,
+} from '../../../utils/reasoning-control'
+import { buildGeminiImageConfig } from '../gemini-types'
 
 interface Options {
   licenseKey?: string
@@ -40,6 +50,38 @@ interface Config {
   uuid: string
 }
 
+const DEFAULT_CHATBOXAI_ANTHROPIC_MAX_OUTPUT_TOKENS = 8192
+
+function inferChatboxAIModelApiStyle(modelId: string): ProviderModelInfo['apiStyle'] | undefined {
+  const normalized = modelId.toLowerCase()
+  if (normalized.startsWith('gemini-')) return 'google'
+  if (normalized.startsWith('claude-')) return 'anthropic'
+  return undefined
+}
+
+function withChatboxAIModelApiStyleFallback(model: ProviderModelInfo): ProviderModelInfo {
+  if (model.apiStyle) return model
+  const apiStyle = inferChatboxAIModelApiStyle(model.modelId)
+  return apiStyle ? { ...model, apiStyle } : model
+}
+
+/**
+ * Default max_tokens for ChatboxAI Anthropic models when the user has not set one.
+ * Capped by the model's real output limit: the gateway serves upstream Anthropic
+ * model ids, but the manifest carries no maxOutput and ChatboxAI is excluded from
+ * registry enrichment, so we consult the claude registry section directly. Without
+ * the cap, models with limits below the default (e.g. claude-3-opus: 4096) would be
+ * rejected upstream — @ai-sdk/anthropic only clamps overshoot for model ids it knows.
+ */
+function getDefaultAnthropicMaxOutputTokens(model: ProviderModelInfo): number {
+  const registryMaxOutput = getRegistryModelMeta(ModelProviderEnum.Claude, model.modelId)?.maxOutput
+  const modelLimit = model.maxOutput ?? registryMaxOutput
+  if (modelLimit && modelLimit > 0) {
+    return Math.min(DEFAULT_CHATBOXAI_ANTHROPIC_MAX_OUTPUT_TOKENS, modelLimit)
+  }
+  return DEFAULT_CHATBOXAI_ANTHROPIC_MAX_OUTPUT_TOKENS
+}
+
 // 将chatboxAIFetch移到类内部作为私有方法
 
 export default class ChatboxAI extends AbstractAISDKModel implements ModelInterface {
@@ -51,6 +93,7 @@ export default class ChatboxAI extends AbstractAISDKModel implements ModelInterf
     dependencies: ModelDependencies
   ) {
     options.stream = true
+    options.model = withChatboxAIModelApiStyleFallback(options.model)
     super(options, dependencies)
   }
 
@@ -62,17 +105,24 @@ export default class ChatboxAI extends AbstractAISDKModel implements ModelInterf
     return true
   }
 
-  protected getProvider(options: CallChatCompletionOptions) {
+  private getChatHeaders(options: CallChatCompletionOptions): Record<string, string> {
     const license = this.options.licenseKey || ''
     const instanceId = (this.options.licenseInstances ? this.options.licenseInstances[license] : '') || ''
+    return {
+      'Instance-Id': instanceId,
+      'chatbox-session-id': options.sessionId || '',
+      'chatbox-agent-mode': String(options.agentMode === true),
+    }
+  }
+
+  protected getProvider(options: CallChatCompletionOptions) {
     if (this.options.model.apiStyle === 'google') {
       const provider = createGoogleGenerativeAI({
         apiKey: this.options.licenseKey || '',
         baseURL: `${getChatboxAPIOrigin()}/gateway/google-ai-studio/v1beta`,
         headers: {
-          'Instance-Id': instanceId,
+          ...this.getChatHeaders(options),
           Authorization: `Bearer ${this.options.licenseKey || ''}`,
-          'chatbox-session-id': options.sessionId,
         },
         fetch: this.chatboxAIFetch.bind(this),
       })
@@ -81,10 +131,7 @@ export default class ChatboxAI extends AbstractAISDKModel implements ModelInterf
       const provider = createAnthropic({
         apiKey: this.options.licenseKey || '',
         baseURL: `${getChatboxAPIOrigin()}/gateway/anthropic/v1`,
-        headers: {
-          'Instance-Id': instanceId,
-          'chatbox-session-id': options.sessionId || '',
-        },
+        headers: this.getChatHeaders(options),
         fetch: this.chatboxAIFetch.bind(this),
       })
       return provider
@@ -92,10 +139,15 @@ export default class ChatboxAI extends AbstractAISDKModel implements ModelInterf
       const provider = createOpenAI({
         apiKey: this.options.licenseKey || '',
         baseURL: `${getChatboxAPIOrigin()}/gateway/openai-responses/v1`,
-        headers: {
-          'Instance-Id': instanceId,
-          'chatbox-session-id': options.sessionId || '',
-        },
+        headers: this.getChatHeaders(options),
+        fetch: this.chatboxAIFetch.bind(this),
+      })
+      return provider
+    } else if (isDeepSeekReasoningModel(this.options.model.modelId)) {
+      const provider = createDeepSeek({
+        apiKey: this.options.licenseKey || '',
+        baseURL: `${getChatboxAPIOrigin()}/gateway/openai/v1`,
+        headers: this.getChatHeaders(options),
         fetch: this.chatboxAIFetch.bind(this),
       })
       return provider
@@ -104,10 +156,7 @@ export default class ChatboxAI extends AbstractAISDKModel implements ModelInterf
         name: 'ChatboxAI',
         apiKey: this.options.licenseKey || '',
         baseURL: `${getChatboxAPIOrigin()}/gateway/openai/v1`,
-        headers: {
-          'Instance-Id': instanceId,
-          'chatbox-session-id': options.sessionId || '',
-        },
+        headers: this.getChatHeaders(options),
         fetch: this.chatboxAIFetch.bind(this),
       })
       return provider
@@ -116,19 +165,17 @@ export default class ChatboxAI extends AbstractAISDKModel implements ModelInterf
 
   protected getCallSettings(options: CallChatCompletionOptions): CallSettings {
     if (this.options.model.apiStyle === 'anthropic') {
-      const isModelSupportReasoning = this.isSupportReasoning()
-      let providerOptions = {} as { anthropic: AnthropicProviderOptions }
-      if (isModelSupportReasoning) {
+      let providerOptions: CallSettings['providerOptions'] = {}
+      const claudeOptions = normalizeClaudeReasoningOptions(this.options.model.modelId, options.providerOptions?.claude)
+      if (claudeOptions) {
         providerOptions = {
-          anthropic: {
-            ...(options.providerOptions?.claude || {}),
-          },
+          anthropic: { ...claudeOptions },
         }
       }
       // Anthropic API requires only one of temperature or topP
       const callSettings: CallSettings = {
         providerOptions,
-        maxOutputTokens: this.options.maxOutputTokens,
+        maxOutputTokens: this.options.maxOutputTokens ?? getDefaultAnthropicMaxOutputTokens(this.options.model),
       }
       if (this.options.temperature !== undefined) {
         callSettings.temperature = this.options.temperature
@@ -137,10 +184,59 @@ export default class ChatboxAI extends AbstractAISDKModel implements ModelInterf
       }
       return callSettings
     }
+    if (this.options.model.apiStyle === 'google') {
+      const providerOptions: GoogleGenerativeAIProviderOptions = {}
+      if (options.providerOptions?.google?.thinkingConfig) {
+        providerOptions.thinkingConfig = options.providerOptions.google.thinkingConfig
+      }
+      return {
+        temperature: this.options.temperature,
+        topP: this.options.topP,
+        maxOutputTokens: this.options.maxOutputTokens,
+        providerOptions: Object.keys(providerOptions).length > 0 ? { google: providerOptions } : undefined,
+      }
+    }
+    if (this.options.model.apiStyle === 'openai-responses') {
+      // Responses 的服务端状态（item_reference / previous_response_id）无法跨 provider 解析。
+      // store=false 让 AI SDK 内联完整历史，不依赖服务端状态。
+      return {
+        temperature: this.options.temperature,
+        topP: this.options.topP,
+        maxOutputTokens: this.options.maxOutputTokens,
+        providerOptions: {
+          openai: {
+            ...normalizeOpenAIReasoningOptions(this.options.model.modelId, options.providerOptions?.openai),
+            store: false,
+          },
+        },
+      }
+    }
+    const openAICompatibleOptions = pickOpenAICompatibleReasoningOptions(
+      this.options.model.modelId,
+      options.providerOptions
+    )
+    if (isDeepSeekReasoningModel(this.options.model.modelId)) {
+      const thinkingType =
+        options.providerOptions?.deepseek?.thinking?.type ??
+        getLegacyOpenAICompatibleThinkingType(options.providerOptions?.openaiCompatible?.reasoning)
+
+      return {
+        temperature: this.options.temperature,
+        topP: this.options.topP,
+        maxOutputTokens: this.options.maxOutputTokens,
+        providerOptions: thinkingType ? { deepseek: { thinking: { type: thinkingType } } } : undefined,
+      }
+    }
     return {
       temperature: this.options.temperature,
       topP: this.options.topP,
       maxOutputTokens: this.options.maxOutputTokens,
+      providerOptions: openAICompatibleOptions
+        ? {
+            openaiCompatible: openAICompatibleOptions,
+            [getOpenAICompatibleProviderOptionsKey('ChatboxAI')]: openAICompatibleOptions,
+          }
+        : undefined,
     }
   }
 
@@ -317,7 +413,11 @@ export default class ChatboxAI extends AbstractAISDKModel implements ModelInterf
     ].includes(this.options.model.modelId)
   }
 
-  public isSupportToolUse() {
-    return true
+  public isSupportToolUse(scope?: ToolUseScope) {
+    if (isDeepSeekWeakToolUse(this.options.model.modelId, scope)) return false
+    if (!this.options.model.capabilities) {
+      return !this.options.model.type || this.options.model.type === 'chat'
+    }
+    return super.isSupportToolUse()
   }
 }

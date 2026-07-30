@@ -1,12 +1,13 @@
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible'
 import { extractReasoningMiddleware, wrapLanguageModel } from 'ai'
 import AbstractAISDKModel from '../../../models/abstract-ai-sdk'
-import { fetchRemoteModels } from '../../../models/openai-compatible'
+import { fetchRemoteModels, getOpenAICompatibleProviderOptionsKey } from '../../../models/openai-compatible'
 import type { CallChatCompletionOptions } from '../../../models/types'
 import { createFetchWithProxy } from '../../../models/utils/fetch-proxy'
 import type { ProviderModelInfo } from '../../../types'
 import type { ModelDependencies } from '../../../types/adapters'
 import { normalizeOpenAIApiHostAndPath } from '../../../utils/llm_utils'
+import { pickOpenAICompatibleReasoningOptions } from '../../../utils/reasoning-control'
 
 interface Options {
   apiKey: string
@@ -36,12 +37,22 @@ export default class CustomOpenAI extends AbstractAISDKModel {
     this.options = { ...options, apiHost, apiPath }
   }
 
-  protected getCallSettings() {
+  protected getCallSettings(options: CallChatCompletionOptions) {
+    const openAICompatibleOptions = pickOpenAICompatibleReasoningOptions(
+      this.options.model.modelId,
+      options.providerOptions
+    )
     return {
       temperature: this.options.temperature,
       topP: this.options.topP,
       maxOutputTokens: this.options.maxOutputTokens,
       stream: this.options.stream,
+      providerOptions: openAICompatibleOptions
+        ? {
+            openaiCompatible: openAICompatibleOptions,
+            [getOpenAICompatibleProviderOptionsKey(this.name)]: openAICompatibleOptions,
+          }
+        : undefined,
     }
   }
 

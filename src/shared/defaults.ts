@@ -1,5 +1,6 @@
 import { v4 as uuidv4 } from 'uuid'
 import { type Config, ModelProviderEnum, type SessionSettings, type Settings, Theme } from './types'
+import { DEFAULT_ENABLED_BUILTIN_SKILL_NAMES } from './types/skills'
 
 export function settings(): Settings {
   return {
@@ -51,7 +52,7 @@ export function settings(): Settings {
     // groqModel: 'llama3-70b-8192',
 
     // deepseekAPIKey: '',
-    // deepseekModel: 'deepseek-chat',
+    // deepseekModel: 'deepseek-v4-flash',
 
     // siliconCloudKey: '',
     // siliconCloudModel: 'Qwen/Qwen2.5-7B-Instruct',
@@ -74,7 +75,7 @@ export function settings(): Settings {
     showMessageTimestamp: false,
     showFirstTokenLatency: false,
     showAvatar: true,
-    // messageLayout: 'left' as const, // 不设置默认值，这样可以通过判断这个值是否为空来判断是否通过了新功能引导
+    messageLayout: 'bubble',
     userAvatarKey: '',
     defaultAssistantAvatarKey: '',
     backgroundImageKey: '',
@@ -107,15 +108,19 @@ export function settings(): Settings {
     autoUpdate: true,
     betaUpdate: false,
 
+    defaultEmbeddingModel: undefined,
+    defaultRerankModel: undefined,
+
     shortcuts: {
       quickToggle: 'Alt+`', // 快速切换窗口显隐的快捷键
       inputBoxFocus: 'mod+i', // 聚焦输入框的快捷键
       inputBoxWebBrowsingMode: 'mod+e', // 切换输入框的 web 浏览模式的快捷键
       newChat: 'mod+n', // 新建聊天的快捷键
-      newPictureChat: 'mod+shift+n', // 新建图片会话的快捷键
+      newPictureChat: '', // 新建图片会话的快捷键
       sessionListNavNext: 'mod+tab', // 切换到下一个会话的快捷键
       sessionListNavPrev: 'mod+shift+tab', // 切换到上一个会话的快捷键
       sessionListNavTargetIndex: 'mod', // 会话导航的快捷键
+      messageListRefreshContext: 'mod+shift+n', // 新建话题的快捷键
       dialogOpenSearch: 'mod+k', // 打开搜索对话框的快捷键
       inputBoxSendMessage: 'Enter', // 发送消息的快捷键
       inputBoxSendMessageWithoutResponse: 'Ctrl+Enter', // 发送但不生成回复的快捷键
@@ -148,8 +153,10 @@ export function settings(): Settings {
       enabledBuiltinServers: [],
     },
     skills: {
-      enabledSkillNames: [],
+      enabledSkillNames: [...DEFAULT_ENABLED_BUILTIN_SKILL_NAMES],
       translationEnabled: true,
+      builtinDefaultsInitialized: true,
+      appliedDefaultBuiltinSkillNames: [...DEFAULT_ENABLED_BUILTIN_SKILL_NAMES],
     },
   }
 }

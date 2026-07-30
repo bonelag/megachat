@@ -1,71 +1,182 @@
-import { tool } from 'ai'
-import { z } from 'zod'
+import { jsonSchema, type ToolSet } from 'ai'
 import platform from '@/platform'
+import { asRecord, contentOrErrorText, numberField, stringField, toTextModelOutput } from './model-output'
 
-export const queryKnowledgeBaseTool = (kbId: number) => {
-  return tool({
+function formatKnowledgeBaseArray(
+  output: unknown,
+  formatItem: (item: Record<string, unknown>, index: number) => string
+) {
+  if (typeof output === 'string') return output
+  if (!Array.isArray(output)) return contentOrErrorText(output)
+  if (output.length === 0) return 'No results found.'
+  return output
+    .map((item, index) => {
+      const record = asRecord(item)
+      return record ? formatItem(record, index) : String(item)
+    })
+    .join('\n\n')
+}
+
+function formatSearchResults(output: unknown): string {
+  return formatKnowledgeBaseArray(output, (item, index) => {
+    const filename = stringField(item, 'filename') ?? 'Unknown file'
+    const chunkIndex = numberField(item, 'chunkIndex')
+    const score = numberField(item, 'score')
+    const text = stringField(item, 'text') ?? ''
+    const lines = [`Result ${index + 1}`, `Source: ${filename}`]
+    if (chunkIndex !== undefined) lines.push(`Chunk: ${chunkIndex}`)
+    if (score !== undefined) lines.push(`Score: ${score.toFixed(3)}`)
+    lines.push('Text:', text)
+    return lines.join('\n')
+  })
+}
+
+function formatFileMeta(output: unknown): string {
+  return formatKnowledgeBaseArray(output, (item, index) => {
+    const filename = stringField(item, 'filename') ?? stringField(item, 'name') ?? `File ${index + 1}`
+    const id = numberField(item, 'id')
+    const chunks =
+      numberField(item, 'chunk_count') ?? numberField(item, 'chunkCount') ?? numberField(item, 'total_chunks')
+    const status = stringField(item, 'status')
+    const lines = [`File ${index + 1}`, `Name: ${filename}`]
+    if (id !== undefined) lines.push(`ID: ${id}`)
+    if (chunks !== undefined) lines.push(`Chunks: ${chunks}`)
+    if (status) lines.push(`Status: ${status}`)
+    return lines.join('\n')
+  })
+}
+
+function formatChunks(output: unknown): string {
+  return formatKnowledgeBaseArray(output, (item, index) => {
+    const filename = stringField(item, 'filename') ?? stringField(item, 'fileName') ?? 'Unknown file'
+    const chunkIndex = numberField(item, 'chunkIndex') ?? numberField(item, 'chunk_index')
+    const text = stringField(item, 'text') ?? stringField(item, 'content') ?? ''
+    const lines = [`Chunk ${index + 1}`, `Source: ${filename}`]
+    if (chunkIndex !== undefined) lines.push(`Chunk: ${chunkIndex}`)
+    lines.push('Content:', text)
+    return lines.join('\n')
+  })
+}
+
+export const queryKnowledgeBaseTool = (kbId: number): ToolSet[string] => {
+  return {
     description: `Search the knowledge base with a semantic query. Returns relevant document chunks.
 
 Call this when the user's question is related to the attached documents and searching would help you answer more accurately. For greetings, chit-chat, or questions clearly unrelated to the knowledge base, answer directly. For follow-up questions on the same topic, reuse earlier results when they still apply.`,
-    inputSchema: z.object({
-      query: z.string().describe('The search query - rephrase the user question for better semantic matching'),
+    inputSchema: jsonSchema({
+      type: 'object',
+      properties: {
+        query: {
+          type: 'string',
+          description: 'The search query - rephrase the user question for better semantic matching',
+        },
+      },
+      required: ['query'],
+      additionalProperties: false,
     }),
-    execute: async (input: { query: string }) => {
+    execute: async (input) => {
+      const queryInput = input as { query: string }
       const knowledgeBaseController = platform.getKnowledgeBaseController()
-      return await knowledgeBaseController.search(kbId, input.query)
+      return await knowledgeBaseController.search(kbId, queryInput.query)
     },
-  })
+    toModelOutput: toTextModelOutput(formatSearchResults),
+  }
 }
 
-export function getFilesMetaTool(knowledgeBaseId: number) {
-  return tool({
+export function getFilesMetaTool(knowledgeBaseId: number): ToolSet[string] {
+  return {
     description: `Get metadata for files in the current knowledge base. Use this to find out more about files returned from a search, like filename, size, and total number of chunks.`,
-    inputSchema: z.object({
-      fileIds: z.array(z.number()).describe('An array of file IDs to get metadata for.'),
+    inputSchema: jsonSchema({
+      type: 'object',
+      properties: {
+        fileIds: {
+          type: 'array',
+          items: { type: 'number' },
+          description: 'An array of file IDs to get metadata for.',
+        },
+      },
+      required: ['fileIds'],
+      additionalProperties: false,
     }),
-    execute: async (input: { fileIds: number[] }) => {
-      if (!input.fileIds || input.fileIds.length === 0) {
+    execute: async (input) => {
+      const metaInput = input as { fileIds?: number[] }
+      if (!metaInput.fileIds || metaInput.fileIds.length === 0) {
         return 'Please provide an array of file IDs.'
       }
       const knowledgeBaseController = platform.getKnowledgeBaseController()
-      return await knowledgeBaseController.getFilesMeta(knowledgeBaseId, input.fileIds)
+      return await knowledgeBaseController.getFilesMeta(knowledgeBaseId, metaInput.fileIds)
     },
-  })
+    toModelOutput: toTextModelOutput(formatFileMeta),
+  }
 }
 
-export function readFileChunksTool(knowledgeBaseId: number) {
-  return tool({
+export function readFileChunksTool(knowledgeBaseId: number): ToolSet[string] {
+  return {
     description: `Read content chunks from specified files in the current knowledge base. Use this to get the text content of a document.`,
-    inputSchema: z.object({
-      chunks: z
-        .array(
-          z.object({
-            fileId: z.number().describe('The ID of the file.'),
-            chunkIndex: z.number().describe('The index of the chunk to read, start from 0.'),
-          })
-        )
-        .describe('An array of file and chunk index pairs to read.'),
+    inputSchema: jsonSchema({
+      type: 'object',
+      properties: {
+        chunks: {
+          type: 'array',
+          description: 'An array of file and chunk index pairs to read.',
+          items: {
+            type: 'object',
+            properties: {
+              fileId: {
+                type: 'number',
+                description: 'The ID of the file.',
+              },
+              chunkIndex: {
+                type: 'number',
+                description: 'The index of the chunk to read, start from 0.',
+              },
+            },
+            required: ['fileId', 'chunkIndex'],
+            additionalProperties: false,
+          },
+        },
+      },
+      required: ['chunks'],
+      additionalProperties: false,
     }),
-    execute: async (input: { chunks: Array<{ fileId: number; chunkIndex: number }> }) => {
-      if (!input.chunks || input.chunks.length === 0) {
+    execute: async (input) => {
+      const chunksInput = input as { chunks?: Array<{ fileId: number; chunkIndex: number }> }
+      if (!chunksInput.chunks || chunksInput.chunks.length === 0) {
         return 'Please provide an array of chunks to read.'
       }
       const knowledgeBaseController = platform.getKnowledgeBaseController()
-      return await knowledgeBaseController.readFileChunks(knowledgeBaseId, input.chunks)
+      return await knowledgeBaseController.readFileChunks(knowledgeBaseId, chunksInput.chunks)
     },
-  })
+    toModelOutput: toTextModelOutput(formatChunks),
+  }
 }
 
-export function listFilesTool(knowledgeBaseId: number) {
-  return tool({
+export function listFilesTool(knowledgeBaseId: number): ToolSet[string] {
+  return {
     description: `List all files in the current knowledge base. Returns file ID, filename, and chunk count for each file.`,
-    inputSchema: z.object({
-      page: z.number().describe('The page number to list, start from 0.'),
-      pageSize: z.number().describe('The number of files to list per page.'),
+    inputSchema: jsonSchema({
+      type: 'object',
+      properties: {
+        page: {
+          type: 'integer',
+          description: 'The page number to list, start from 0.',
+        },
+        pageSize: {
+          type: 'integer',
+          description: 'The number of files to list per page.',
+        },
+      },
+      required: ['page', 'pageSize'],
+      additionalProperties: false,
     }),
-    execute: async (input: { page: number; pageSize: number }) => {
+    execute: async (input) => {
+      const listInput = input as { page: number; pageSize: number }
       const knowledgeBaseController = platform.getKnowledgeBaseController()
-      const files = await knowledgeBaseController.listFilesPaginated(knowledgeBaseId, input.page, input.pageSize)
+      const files = await knowledgeBaseController.listFilesPaginated(
+        knowledgeBaseId,
+        listInput.page,
+        listInput.pageSize
+      )
       return files
         .filter((file) => file.status === 'done')
         .map((file) => ({
@@ -74,7 +185,8 @@ export function listFilesTool(knowledgeBaseId: number) {
           chunkCount: file.chunk_count || 0,
         }))
     },
-  })
+    toModelOutput: toTextModelOutput(formatFileMeta),
+  }
 }
 async function getToolSetDescription(knowledgeBaseId: number, knowledgeBaseName: string) {
   // 预加载文件列表，让模型知道知识库中有什么文件

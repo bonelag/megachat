@@ -27,6 +27,7 @@ import type {
 import { parseStreamResponse } from './useStreamParser'
 import {
   checkHasValidConfig,
+  createAutoNewChatLoadingToolPart,
   createNewChatButtonToolPart,
   createSuggestedQuestionsToolPart,
   generateMessageId,
@@ -61,6 +62,7 @@ export function useGuideSession(): UseGuideSessionReturn {
   const [userTypeSelected, setUserTypeSelected] = useState<UserType | null>(null)
   const [onboardingStep, setOnboardingStep] = useState<OnboardingStep>('greeting')
   const [forceSelectionOnce, setForceSelectionOnce] = useState(false)
+  const [isAutoRedirectingToNewChat, setIsAutoRedirectingToNewChat] = useState(false)
   const [resetKey, setResetKey] = useState(0)
 
   const abortControllerRef = useRef<AbortController | null>(null)
@@ -119,8 +121,8 @@ export function useGuideSession(): UseGuideSessionReturn {
 
   // Check if user can send messages (7-round limit for all users)
   const canSendMessage = useMemo(() => {
-    return userMessageCount < GUIDE_CONFIG.maxRounds
-  }, [userMessageCount])
+    return !isAutoRedirectingToNewChat && userMessageCount < GUIDE_CONFIG.maxRounds
+  }, [isAutoRedirectingToNewChat, userMessageCount])
 
   // Check if guide is in progress (has interactions)
   const isGuideInProgress = useMemo(
@@ -165,9 +167,9 @@ export function useGuideSession(): UseGuideSessionReturn {
 
     if (enterCompleted) {
       // User already has valid config, show completion message
-      const configCompleteMsg = String(t(
+      const configCompleteMsg = t(
         "You've already completed the setup and can use Chatbox normally.\n\nIf you have any questions about Chatbox AI, feel free to ask me here."
-      ))
+      )
       setMessages([
         {
           id: generateMessageId(),
@@ -176,7 +178,7 @@ export function useGuideSession(): UseGuideSessionReturn {
           parts: [
             { type: 'text', text: configCompleteMsg },
             createNewChatButtonToolPart(`new-chat-btn-${Date.now()}`, {
-              label: String(t('Click here to start a new chat')),
+              label: t('Click here to start a new chat') ?? undefined,
             }),
             createSuggestedQuestionsToolPart(`suggested-${Date.now()}`),
           ],
@@ -432,7 +434,7 @@ Chatbox is an **all-in-one AI chat client** that supports 30+ mainstream models 
               'Great! Chatbox AI is our all-in-one service designed for new users - it works out of the box with no complex setup required.\n\nClick the login button below, then enter your email and verification code in the popup to sign in.'
             )
           : t(
-              "Excellent! You're all set to explore on your own.\n\nClick the **Settings** icon in the sidebar, then go to **Model Providers** to configure your API key. If you need help later, just click the Help button in the bottom left corner. Enjoy!"
+              "Excellent! You're ready to explore.\n\nClick the button below to configure your API directly. If you need help later, just click the **Help** button in the sidebar. Enjoy!"
             )
 
       // Create appropriate tool parts based on selection
@@ -451,6 +453,15 @@ Chatbox is an **all-in-one AI chat client** that supports 30+ mainstream models 
         ]
         setOnboardingStep('login_flow')
       } else {
+        toolParts = [
+          {
+            type: 'tool-show_provider_settings_button',
+            toolCallId: `provider-settings-btn-${Date.now()}`,
+            toolName: 'show_provider_settings_button',
+            state: 'result',
+            result: { displayed: true },
+          },
+        ]
         // Expert/skip users configure on their own - mark as completed
         onboardingStore.getState().markCompleted()
         setOnboardingStep('completed')
@@ -476,42 +487,29 @@ Chatbox is an **all-in-one AI chat client** that supports 30+ mainstream models 
    * Stream the terminal "you're all set" celebration message + CTAs + confetti.
    * Idempotent: subsequent calls are no-ops.
    */
-  const renderCelebration = useCallback(async () => {
-    if (celebrationShownRef.current) return
-    celebrationShownRef.current = true
+  const renderCelebration = useCallback(
+    async (options?: { waitForWindowFocusBeforeAutoNavigate?: boolean }) => {
+      if (celebrationShownRef.current) return
+      celebrationShownRef.current = true
 
-    setOnboardingStep('completed')
-    const baseTimestamp = Date.now()
+      setOnboardingStep('completed')
+      setIsAutoRedirectingToNewChat(true)
+      const baseTimestamp = Date.now()
 
-    await streamFixedMessage(
-      t(
-        "Awesome, you're all set! You can now start using Chatbox.\n\nClick **New Chat** below to start chatting, or **View License Details** to check your subscription info. If you have more questions, feel free to click the Help button in the bottom left corner anytime. Enjoy!"
-      ),
-      [
-        createNewChatButtonToolPart(`new-chat-btn-${baseTimestamp}`),
-        {
-          type: 'tool-show_view_license_button',
-          toolCallId: `view-license-btn-${baseTimestamp}`,
-          toolName: 'show_view_license_button',
-          state: 'result',
-          result: { displayed: true },
-        },
-        {
-          type: 'tool-show_suggested_questions',
-          toolCallId: `suggested-questions-${baseTimestamp}`,
-          toolName: 'show_suggested_questions',
-          state: 'result',
-          result: { displayed: true },
-        },
-      ]
-    )
+      await streamFixedMessage(t("Awesome, everything is ready! Let's start your first Chatbox AI chat."), [
+        createAutoNewChatLoadingToolPart(`auto-new-chat-${baseTimestamp}`, {
+          waitForWindowFocusBeforeAutoNavigate: options?.waitForWindowFocusBeforeAutoNavigate,
+        }),
+      ])
 
-    const timeoutId = setTimeout(() => {
-      pendingTimeoutsRef.current.delete(timeoutId)
-      confetti()
-    }, 200)
-    pendingTimeoutsRef.current.add(timeoutId)
-  }, [streamFixedMessage, t])
+      const timeoutId = setTimeout(() => {
+        pendingTimeoutsRef.current.delete(timeoutId)
+        confetti()
+      }, 200)
+      pendingTimeoutsRef.current.add(timeoutId)
+    },
+    [streamFixedMessage, t]
+  )
 
   /**
    * Mark the guide flow as completed.
@@ -592,7 +590,7 @@ Chatbox is an **all-in-one AI chat client** that supports 30+ mainstream models 
       } catch (err) {
         console.error('[guide] auto-activate after free-plan claim failed:', err)
       }
-      await renderCelebration()
+      await renderCelebration({ waitForWindowFocusBeforeAutoNavigate: true })
     },
     [renderCelebration]
   )
@@ -617,7 +615,7 @@ Chatbox is an **all-in-one AI chat client** that supports 30+ mainstream models 
         ),
         [
           createNewChatButtonToolPart(`new-chat-btn-${Date.now()}`, {
-            label: String(t('Click here to start a new chat')),
+            label: t('Click here to start a new chat') ?? undefined,
           }),
           createSuggestedQuestionsToolPart(`suggested-${Date.now()}`),
         ]
@@ -770,6 +768,7 @@ Chatbox is an **all-in-one AI chat client** that supports 30+ mainstream models 
     setUserTypeSelected(null)
     setError(null)
     setIsLoading(false)
+    setIsAutoRedirectingToNewChat(false)
     setOnboardingStep('greeting')
     completionTriggeredRef.current = false
     claimWaitingShownRef.current = false
@@ -814,39 +813,18 @@ Chatbox is an **all-in-one AI chat client** that supports 30+ mainstream models 
     setUserTypeSelected('novice')
     setHasValidConfig(true)
     setOnboardingStep('completed')
+    setIsAutoRedirectingToNewChat(true)
     completionTriggeredRef.current = true
 
     // Add the success message
-    const successText = t(
-      "Awesome, you're all set! You can now start using Chatbox.\n\nClick **New Chat** below to start chatting, or **View License Details** to check your subscription info. If you have any questions, feel free to click the Help button in the bottom left corner anytime. Enjoy!"
-    )
+    const successText = t("Awesome, everything is ready! Let's start your first Chatbox AI chat.")
     const successMessage: GuideUIMessage = {
       id: generateMessageId(),
       role: 'assistant',
       content: successText,
       parts: [
         { type: 'text', text: successText },
-        {
-          type: 'tool-show_new_chat_button',
-          toolCallId: `new-chat-btn-debug-${Date.now()}`,
-          toolName: 'show_new_chat_button',
-          state: 'result',
-          result: { displayed: true },
-        },
-        {
-          type: 'tool-show_view_license_button',
-          toolCallId: `view-license-btn-debug-${Date.now()}`,
-          toolName: 'show_view_license_button',
-          state: 'result',
-          result: { displayed: true },
-        },
-        {
-          type: 'tool-show_suggested_questions',
-          toolCallId: `suggested-questions-debug-${Date.now()}`,
-          toolName: 'show_suggested_questions',
-          state: 'result',
-          result: { displayed: true },
-        },
+        createAutoNewChatLoadingToolPart(`auto-new-chat-debug-${Date.now()}`),
       ],
     }
 

@@ -13,12 +13,18 @@ let POOL = [
 
 export function isChatboxAPI(input: RequestInfo | URL) {
   const url = typeof input === 'string' ? input : ((input as Request).url ?? input.toString())
-  return POOL.some((o) => url.startsWith(o)) || url.startsWith(API_ORIGIN)
+  return POOL.some((o) => url.startsWith(o)) || url.startsWith(getChatboxAPIOrigin())
 }
 
 export function getChatboxAPIOrigin() {
   if (process.env.USE_LOCAL_API) {
     return 'http://localhost:8002'
+  }
+  if (process.env.USE_BETA_API) {
+    return 'https://api-beta.chatboxai.app'
+  }
+  if (process.env.USE_NEWDB_API) {
+    return 'https://beta-new-db.chatboxai.app'
   }
   return API_ORIGIN
 }

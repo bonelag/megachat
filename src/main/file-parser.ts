@@ -2,7 +2,12 @@ import * as chardet from 'chardet'
 import Epub from 'epub'
 import * as fs from 'fs-extra'
 import * as iconv from 'iconv-lite'
-import { isEpubFilePath, isOfficeFilePath } from '../shared/file-extensions'
+import { isEpubFilePath, isOfficeFilePath, isPdfFilePath } from '../shared/file-extensions'
+import {
+  LOCAL_PARSER_FILE_TOO_LARGE_ERROR,
+  LOCAL_PARSER_MAX_PDF_FILE_SIZE,
+  LOCAL_PARSER_PDF_PASSWORD_PROTECTED_ERROR,
+} from '../shared/file-parse-errors'
 import { getLogger } from './util'
 
 const log = getLogger('file-parser')
@@ -67,6 +72,15 @@ async function concurrentMap<T, R>(
 }
 
 export async function parseFile(filePath: string) {
+  if (isPdfFilePath(filePath)) {
+    try {
+      return await parsePdf(filePath)
+    } catch (error) {
+      log.error(error)
+      throw error
+    }
+  }
+
   if (isOfficeFilePath(filePath)) {
     try {
       const officeParser = await import('officeparser')
@@ -108,6 +122,130 @@ export async function parseFile(filePath: string) {
   const fileBuffer = await fs.readFile(filePath)
   const data = iconv.decode(fileBuffer, encoding)
   return data
+}
+
+async function loadPdfjs() {
+  // The production main bundle inlines dynamic imports, but pdfjs resolves its
+  // worker with a runtime-built path that the bundler cannot inline. Pre-load
+  // the worker module and expose it via the globalThis.pdfjsWorker hook that
+  // pdfjs checks before attempting the dynamic import.
+  const globals = globalThis as { pdfjsWorker?: unknown }
+  if (!globals.pdfjsWorker) {
+    globals.pdfjsWorker = await import('pdfjs-dist/legacy/build/pdf.worker.mjs')
+  }
+  return await import('pdfjs-dist/legacy/build/pdf.mjs')
+}
+
+/**
+ * Per-page marker inserted before each page's text.
+ *
+ * IMPORTANT: this format must stay in sync with the Chatbox AI backend's remote
+ * document parsing (chatbox-backend: documentai.MistralOCRResponse.GetTextWithPageInfo,
+ * which emits "\n\n==== Page %d ====\n\n"). Models see this exact format for PDFs
+ * parsed remotely (Web/mobile) and locally (desktop); changing it on one side only
+ * makes citations inconsistent across platforms.
+ */
+function formatPdfPageMarker(pageNumber: number): string {
+  return `==== Page ${pageNumber} ====`
+}
+
+/**
+ * Parse a PDF into plain text with per-page markers (see {@link formatPdfPageMarker})
+ * so that models can cite PDF page numbers instead of line numbers of the extracted
+ * text.
+ */
+export async function parsePdf(filePath: string): Promise<string> {
+  // Guard before reading the file into memory: pdfjs holds the buffer plus its own
+  // internal copy, so a huge PDF can transiently use several times its size.
+  const stats = await fs.stat(filePath)
+  if (stats.size > LOCAL_PARSER_MAX_PDF_FILE_SIZE) {
+    throw new Error(LOCAL_PARSER_FILE_TOO_LARGE_ERROR)
+  }
+  const { getDocument } = await loadPdfjs()
+  const fileBuffer = await fs.readFile(filePath)
+  const loadingTask = getDocument({
+    data: new Uint8Array(fileBuffer),
+    // Text extraction does not render glyphs; pdfjs package assets (cMaps,
+    // standard fonts) are not shipped with the bundled main process.
+    useSystemFonts: true,
+  })
+  try {
+    const document = await loadingTask.promise
+    const pageTexts: string[] = []
+    for (let pageNumber = 1; pageNumber <= document.numPages; pageNumber++) {
+      try {
+        const page = await document.getPage(pageNumber)
+        try {
+          const textContent = await page.getTextContent()
+          let pageText = ''
+          // pdfjs returns text as positioned fragments; insert a line break when the
+          // fragment reports an EOL or its baseline (transform[5]) moves vertically.
+          let lastY: number | undefined
+          for (const item of textContent.items) {
+            if (!('str' in item)) {
+              continue
+            }
+            // pdfjs emits empty-string fragments (e.g. via appendEOL) purely as
+            // line markers. Honor an explicit EOL but skip the baseline heuristic
+            // and the lastY update, otherwise the same break is counted twice and
+            // produces spurious blank lines.
+            if (item.str === '') {
+              if (item.hasEOL && pageText && !pageText.endsWith('\n')) {
+                pageText += '\n'
+              }
+              continue
+            }
+            const y = item.transform[5]
+            // Only break when the baseline moves by more than a fraction of the
+            // fragment's font height. A strict inequality treats sub-line jitter
+            // (superscripts, footnote markers, mixed font sizes) as new lines and
+            // litters the text with spurious breaks; a real line advance is a full
+            // line height and still exceeds this tolerance. Fall back to the font
+            // matrix scale (transform[3]) when pdfjs reports no height.
+            const fontHeight = item.height || Math.abs(item.transform[3]) || 0
+            const lineTolerance = fontHeight * 0.5
+            if (pageText && !pageText.endsWith('\n') && lastY !== undefined && Math.abs(y - lastY) > lineTolerance) {
+              pageText += '\n'
+            }
+            pageText += item.str
+            if (item.hasEOL) {
+              pageText += '\n'
+            }
+            lastY = y
+          }
+          pageTexts.push(pageText.trim())
+        } finally {
+          page.cleanup()
+        }
+      } catch (error) {
+        // A single damaged page must not abort extraction of the rest. Push an
+        // empty placeholder so the surviving pages keep their real page numbers.
+        log.warn(`parsePdf: failed to extract page ${pageNumber} of ${filePath}`, error)
+        pageTexts.push('')
+      }
+    }
+
+    if (pageTexts.every((text) => text === '')) {
+      // No extractable text (e.g. a scanned PDF) — keep returning an empty string
+      // instead of a list of bare page markers.
+      return ''
+    }
+
+    log.info(`Parsed PDF ${filePath}: ${document.numPages} pages`)
+    return pageTexts.map((text, i) => `${formatPdfPageMarker(i + 1)}\n\n${text}`).join('\n\n')
+  } catch (error) {
+    // pdfjs throws a typed PasswordException for encrypted PDFs. Surface it as a
+    // distinct code so the user is told the PDF needs a password instead of the
+    // generic "unsupported file" message (and so the cloud fallback, which also
+    // cannot read it, is skipped). Per-page failures are handled inside the loop
+    // and never reach here.
+    if (error instanceof Error && error.name === 'PasswordException') {
+      throw new Error(LOCAL_PARSER_PDF_PASSWORD_PROTECTED_ERROR)
+    }
+    throw error
+  } finally {
+    await loadingTask.destroy()
+  }
 }
 
 export async function parseEpub(filePath: string): Promise<string> {

@@ -4,7 +4,7 @@ import StopCircleOutlinedIcon from '@mui/icons-material/StopCircleOutlined'
 import { ButtonGroup, IconButton } from '@mui/material'
 import type { Message } from '@shared/types/session'
 import { debounce } from 'lodash'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useIsSmallScreen } from '@/hooks/useScreenChange'
 import { cn } from '@/lib/utils'
@@ -24,8 +24,8 @@ export function isContainRenderableCode(markdown: string): boolean {
     return false
   }
   return (
-    RENDERABLE_CODE_LANGUAGES.some((l) => markdown.includes('```' + l + '\n')) ||
-    RENDERABLE_CODE_LANGUAGES.some((l) => markdown.includes('```' + l.toUpperCase() + '\n'))
+    RENDERABLE_CODE_LANGUAGES.some((l) => markdown.includes(`\`\`\`${l}\n`)) ||
+    RENDERABLE_CODE_LANGUAGES.some((l) => markdown.includes(`\`\`\`${l.toUpperCase()}\n`))
   )
 }
 
@@ -63,15 +63,26 @@ export function MessageArtifact(props: {
     return generateHtml([...contextMessages.map((m) => getMessageText(m)), messageContent])
   }, [contextMessages, messageContent])
 
-  return <ArtifactWithButtons htmlCode={htmlCode} preview={preview} setPreview={setPreview} />
+  return (
+    <ArtifactWithButtons
+      htmlCode={htmlCode}
+      preview={preview}
+      setPreview={setPreview}
+      sessionId={sessionId}
+      uniqueId={`${messageId}-artifact`}
+    />
+  )
 }
 
 export function ArtifactWithButtons(props: {
   htmlCode: string
+  previewUrl?: string
   preview: boolean
   setPreview: (preview: boolean) => void
+  sessionId?: string
+  uniqueId?: string
 }) {
-  const { htmlCode, preview, setPreview } = props
+  const { htmlCode, previewUrl, preview, setPreview, sessionId, uniqueId } = props
   const { t } = useTranslation()
   const [reloadSign, setReloadSign] = useState(0)
   const isSmallScreen = useIsSmallScreen()
@@ -89,6 +100,9 @@ export function ArtifactWithButtons(props: {
   const onOpenFullscreen = async () => {
     await NiceModal.show('artifact-preview', {
       htmlCode,
+      previewUrl,
+      sessionId,
+      uniqueId,
     })
   }
   if (!preview) {
@@ -124,7 +138,7 @@ export function ArtifactWithButtons(props: {
               onClick={(e) => {
                 e.preventDefault()
                 e.stopPropagation()
-                onOpenFullscreen()
+                void onOpenFullscreen()
               }}
             />
             <ArrowRightIcon
@@ -146,7 +160,7 @@ export function ArtifactWithButtons(props: {
         isSmallScreen ? 'flex-col-reverse' : 'flex-row'
       )}
     >
-      <Artifact htmlCode={htmlCode} reloadSign={reloadSign} />
+      <Artifact htmlCode={htmlCode} previewUrl={previewUrl} reloadSign={reloadSign} />
       <ButtonGroup
         orientation={isSmallScreen ? 'horizontal' : 'vertical'}
         className={cn(
@@ -168,40 +182,48 @@ export function ArtifactWithButtons(props: {
   )
 }
 
-export function Artifact(props: { htmlCode: string; reloadSign?: number; className?: string }) {
-  const { htmlCode, reloadSign, className } = props
+export function Artifact(props: { htmlCode: string; previewUrl?: string; reloadSign?: number; className?: string }) {
+  const { htmlCode, previewUrl, reloadSign, className } = props
   const ref = useRef<HTMLIFrameElement>(null)
   const iframeOrigin = 'https://artifact-preview.chatboxai.app/preview'
 
-  const sendIframeMsg = (type: 'html', code: string) => {
+  const sendIframeMsg = useCallback((type: 'html', code: string) => {
     if (!ref.current) {
       return
     }
     ref.current.contentWindow?.postMessage({ type, code }, '*')
-  }
+  }, [])
   // 当 reloadSign 改变时，重新加载 iframe 内容
   useEffect(() => {
-    ;(async () => {
+    if (previewUrl) return
+    void (async () => {
+      void reloadSign
       sendIframeMsg('html', '')
       await new Promise((resolve) => setTimeout(resolve, 1500))
       sendIframeMsg('html', htmlCode)
     })()
-  }, [reloadSign])
+  }, [htmlCode, previewUrl, reloadSign, sendIframeMsg])
 
   // 当 htmlCode 改变时，防抖地刷新 iframe 内容
-  const updateIframe = debounce(() => {
-    sendIframeMsg('html', htmlCode)
-  }, 300)
+  const updateIframe = useMemo(
+    () =>
+      debounce(() => {
+        sendIframeMsg('html', htmlCode)
+      }, 300),
+    [htmlCode, sendIframeMsg]
+  )
   useEffect(() => {
+    if (previewUrl) return
     updateIframe()
     return () => updateIframe.cancel()
-  }, [htmlCode])
+  }, [previewUrl, updateIframe])
 
   return (
     <iframe
+      key={`${previewUrl || iframeOrigin}:${reloadSign ?? 0}`}
       className={cn('w-full', 'border-none', 'h-[400px]', className)}
-      sandbox="allow-scripts allow-forms"
-      src={iframeOrigin}
+      sandbox={previewUrl ? 'allow-scripts allow-forms allow-same-origin' : 'allow-scripts allow-forms'}
+      src={previewUrl || iframeOrigin}
       ref={ref}
     />
   )
@@ -220,7 +242,7 @@ function generateHtml(markdowns: string[]): string {
   for (const markdown of markdowns) {
     for (let line of markdown.split('\n')) {
       line = line.trimStart()
-      const lang = languages.find((l) => '```' + l === line)
+      const lang = languages.find((l) => `\`\`\`${l}` === line)
       if (lang) {
         currentType = lang
         continue
@@ -236,7 +258,7 @@ function generateHtml(markdowns: string[]): string {
         }
       }
       if (currentType) {
-        currentContent += line + '\n'
+        currentContent += `${line}\n`
       }
     }
   }

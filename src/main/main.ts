@@ -1,3 +1,8 @@
+// Polyfill browser canvas globals (DOMMatrix/Path2D/ImageData) that pdfjs-dist
+// references at top level. Must run before any module that loads pdfjs, so keep
+// this as the very first import. See pdfjs-globals.ts for details.
+import './pdfjs-globals'
+
 // solve electron breaking changes, see https://www.electronjs.org/docs/latest/breaking-changes#behavior-changed-directory-databases-in-userdata-will-be-deleted
 // since 1.21.0, and this NEEDS to be imported before any other module, specifically before `app` inited.
 import './legacy-database-migration'
@@ -22,16 +27,20 @@ import path from 'path'
 // @ts-expect-error - source-map-support doesn't have type definitions
 import * as sourceMapSupport from 'source-map-support'
 import type { ShortcutSetting } from 'src/shared/types'
+import { KNOWN_LOCAL_PARSER_ERROR_CODES } from '../shared/file-parse-errors'
+import { flushSentry, sentry } from './adapters/sentry'
 import * as analystic from './analystic-node'
 import { AppUpdater } from './app-updater'
 import * as autoLauncher from './autoLauncher'
 import { handleDeepLink } from './deeplinks'
 import { parseFile } from './file-parser'
+import { isQuitForInstallRequested } from './installer-command'
 import Locale from './locales'
 import * as mcpIpc from './mcp/ipc-stdio-transport'
 import MenuBuilder from './menu'
 import { registerOAuthHandlers } from './oauth'
 import * as proxy from './proxy'
+import { runRipgrepSearch } from './ripgrep-search'
 import { registerSandboxHandlers } from './sandbox'
 import { registerSkillsHandlers } from './skills'
 import {
@@ -44,6 +53,46 @@ import {
   store,
 } from './store-node'
 import * as windowState from './window_state'
+
+function reportMainProcessError(
+  error: unknown,
+  context: {
+    domain: string
+    extras?: Record<string, unknown>
+    handled: boolean
+    operation: string
+    priority: 'critical' | 'high' | 'normal'
+  }
+) {
+  sentry.withScope((scope) => {
+    scope.setTag('component', context.domain)
+    scope.setTag('operation', context.operation)
+    scope.setTag('error_domain', context.domain)
+    scope.setTag('error_operation', context.operation)
+    scope.setTag('error_handled', String(context.handled))
+    scope.setTag('error_priority', context.priority)
+    for (const [key, value] of Object.entries(context.extras ?? {})) {
+      scope.setExtra(key, value)
+    }
+    sentry.captureException(error instanceof Error ? error : new Error(String(error)))
+  })
+}
+
+let handlingFatalMainProcessError = false
+
+process.on('uncaughtException', (error) => {
+  if (handlingFatalMainProcessError) {
+    process.exit(1)
+  }
+  handlingFatalMainProcessError = true
+  reportMainProcessError(error, {
+    domain: 'application',
+    handled: false,
+    operation: 'uncaught_exception',
+    priority: 'critical',
+  })
+  void flushSentry(2000).finally(() => process.exit(1))
+})
 
 const knowledgeBaseInitPromise = import('./knowledge-base/index.js')
   .then((mod) => mod.getInitPromise())
@@ -383,6 +432,19 @@ async function createWindow() {
     },
   })
 
+  mainWindow.webContents.on('render-process-gone', (_event, details) => {
+    reportMainProcessError(new Error(`Renderer process exited unexpectedly: ${details.reason}`), {
+      domain: 'renderer-process',
+      extras: {
+        exitCode: details.exitCode,
+        reason: details.reason,
+      },
+      handled: false,
+      operation: 'render_process_gone',
+      priority: 'critical',
+    })
+  })
+
   // Load the local URL for development or the local
   // html file for production
   if (!app.isPackaged && process.env['ELECTRON_RENDERER_URL']) {
@@ -531,12 +593,22 @@ async function showOrHideWindow() {
 
 // --------- 应用管理 ---------
 
+const quitForInstallRequested = process.platform === 'win32' && isQuitForInstallRequested(process.argv)
 const gotTheLock = app.isPackaged ? app.requestSingleInstanceLock() : true
 
-if (!gotTheLock) {
+if (quitForInstallRequested) {
+  log.info('installer: quit helper instance exiting')
+  app.quit()
+} else if (!gotTheLock) {
   app.quit()
 } else {
-  app.on('second-instance', async (event, commandLine, workingDirectory) => {
+  app.on('second-instance', async (_event, commandLine, _workingDirectory) => {
+    if (process.platform === 'win32' && isQuitForInstallRequested(commandLine)) {
+      log.info('installer: running instance received quit request')
+      app.quit()
+      return
+    }
+
     // on windows and linux, the deep link is passed in the command line
     const url = commandLine.find((arg) => arg.startsWith('chatbox://') || arg.startsWith('chatbox-dev://'))
 
@@ -642,7 +714,15 @@ if (!gotTheLock) {
         destroyTray()
       })
     })
-    .catch((err: unknown) => log.error('App initialization failed:', err))
+    .catch((err: unknown) => {
+      log.error('App initialization failed:', err)
+      reportMainProcessError(err, {
+        domain: 'application',
+        handled: false,
+        operation: 'app_initialization',
+        priority: 'critical',
+      })
+    })
 }
 
 // macos uses this event to handle deep links
@@ -746,6 +826,9 @@ ipcMain.handle('getLocale', () => {
 ipcMain.handle('openLink', (event, link) => {
   return shell.openExternal(link)
 })
+ipcMain.handle('window:is-focused', () => {
+  return Boolean(mainWindow?.isFocused())
+})
 ipcMain.handle('ensureShortcutConfig', (event, json) => {
   const config: ShortcutSetting = JSON.parse(json)
   unregisterShortcuts()
@@ -845,9 +928,134 @@ ipcMain.handle('parseFileLocally', async (event, dataJSON: string) => {
     return JSON.stringify({ text: data, isSupported: true })
   } catch (e) {
     log.error(`parseFileLocally failed: "${params.filePath}"`, e)
-    return JSON.stringify({ isSupported: false })
+    // Forward a known parser error code (e.g. password-protected / too large) so
+    // the renderer can show an accurate message; keep other errors generic.
+    const errorCode = e instanceof Error && KNOWN_LOCAL_PARSER_ERROR_CODES.has(e.message) ? e.message : undefined
+    return JSON.stringify({ isSupported: false, errorCode })
   }
 })
+
+const FS_READ_DEFAULT_LINES = 500
+const FS_READ_MAX_LINES = 2000
+const FS_MAX_LINE_LENGTH = 2000
+const FS_LIST_MAX_ENTRIES = 200
+
+function truncateFsLine(line: string) {
+  return line.length > FS_MAX_LINE_LENGTH ? `${line.slice(0, FS_MAX_LINE_LENGTH - 3)}...` : line
+}
+
+ipcMain.handle('fs:read', async (_event, params: { filePath: string; offset?: number; limit?: number }) => {
+  try {
+    const resolved = path.resolve(params.filePath)
+    const stat = await fs.promises.stat(resolved)
+    if (!stat.isFile()) {
+      return { success: false, error: 'Path is not a file' }
+    }
+
+    const text = await fs.promises.readFile(resolved, 'utf8')
+    const lines = text.split('\n')
+    const startLine = Math.max(1, Math.floor(params.offset ?? 1))
+    const limit = Math.min(FS_READ_MAX_LINES, Math.max(1, Math.floor(params.limit ?? FS_READ_DEFAULT_LINES)))
+    const selected = lines.slice(startLine - 1, startLine - 1 + limit)
+    const content = selected.map(truncateFsLine).join('\n')
+    const endLine = selected.length > 0 ? startLine + selected.length - 1 : startLine
+
+    return {
+      success: true,
+      content,
+      startLine,
+      endLine,
+      totalLines: lines.length,
+    }
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : String(error) }
+  }
+})
+
+ipcMain.handle('fs:list', async (_event, params: { dirPath: string }) => {
+  try {
+    const resolved = path.resolve(params.dirPath)
+    const entries = await fs.promises.readdir(resolved, { withFileTypes: true })
+    const rows = await Promise.all(
+      entries.slice(0, FS_LIST_MAX_ENTRIES).map(async (entry) => {
+        const entryPath = path.join(resolved, entry.name)
+        const stat = await fs.promises.stat(entryPath).catch(() => null)
+        const type = entry.isDirectory() ? 'dir' : entry.isFile() ? 'file' : 'other'
+        const size = stat?.size ?? 0
+        return `${type}\t${size}\t${entry.name}`
+      })
+    )
+    const suffix =
+      entries.length > FS_LIST_MAX_ENTRIES ? `\n... ${entries.length - FS_LIST_MAX_ENTRIES} more entries` : ''
+    return { success: true, content: rows.join('\n') + suffix }
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : String(error) }
+  }
+})
+
+ipcMain.handle(
+  'fs:search',
+  async (_event, params: { pattern: string; dirPath: string; regex?: boolean; include?: string }) => {
+    return runRipgrepSearch({
+      root: params.dirPath,
+      pattern: params.pattern,
+      regex: params.regex,
+      include: params.include,
+    })
+  }
+)
+
+ipcMain.handle('fs:write', async (_event, params: { filePath: string; content: string }) => {
+  try {
+    const resolved = path.resolve(params.filePath)
+    await fs.promises.mkdir(path.dirname(resolved), { recursive: true })
+    await fs.promises.writeFile(resolved, params.content, 'utf8')
+    return { success: true }
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : String(error) }
+  }
+})
+
+ipcMain.handle(
+  'fs:edit',
+  async (
+    _event,
+    params: {
+      filePath: string
+      search?: string
+      replace?: string
+      edits?: Array<{ search: string; replace: string }>
+    }
+  ) => {
+    try {
+      const edits = params.edits?.length
+        ? params.edits
+        : params.search !== undefined && params.replace !== undefined
+          ? [{ search: params.search, replace: params.replace }]
+          : []
+      if (edits.length === 0) {
+        return { success: false, error: 'No edits provided' }
+      }
+      const resolved = path.resolve(params.filePath)
+      let text = await fs.promises.readFile(resolved, 'utf8')
+      for (let index = 0; index < edits.length; index++) {
+        const edit = edits[index]
+        const first = text.indexOf(edit.search)
+        if (first === -1) {
+          return { success: false, error: `Edit ${index + 1}: search text not found` }
+        }
+        if (text.indexOf(edit.search, first + edit.search.length) !== -1) {
+          return { success: false, error: `Edit ${index + 1}: search text is not unique` }
+        }
+        text = text.slice(0, first) + edit.replace + text.slice(first + edit.search.length)
+      }
+      await fs.promises.writeFile(resolved, text, 'utf8')
+      return { success: true }
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error) }
+    }
+  }
+)
 
 ipcMain.handle('parseUrl', async (event, url: string) => {
   // const result = await readability(url, { maxLength: 1000 })

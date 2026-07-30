@@ -1,6 +1,9 @@
-import { ActionIcon, Box, Button, Flex, Image, NavLink, SegmentedControl, Stack, Text, Tooltip } from '@mantine/core'
+import { registerPlugin } from '@capacitor/core'
+import NiceModal from '@ebay/nice-modal-react'
+import { ActionIcon, Box, Button, Flex, Image, NavLink, Stack, Text, Tooltip } from '@mantine/core'
 import SwipeableDrawer from '@mui/material/SwipeableDrawer'
 import {
+  IconArchive,
   IconCirclePlus,
   IconCode,
   IconDownload,
@@ -9,6 +12,7 @@ import {
   IconLayoutSidebarLeftCollapse,
   IconMessageChatbot,
   IconPhotoPlus,
+  IconSearch,
   IconSettingsFilled,
 } from '@tabler/icons-react'
 import { useNavigate } from '@tanstack/react-router'
@@ -17,24 +21,36 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import Divider from './components/common/Divider'
 import { ScalableIcon } from './components/common/ScalableIcon'
-import SessionAttachmentRagDevPane from './components/dev/SessionAttachmentRagDevPane'
 import ThemeSwitchButton from './components/dev/ThemeSwitchButton'
 import SessionList from './components/session/SessionList'
-import TaskSessionList from './components/session/TaskSessionList'
 import { FORCE_ENABLE_DEV_PAGES } from './dev/devToolsConfig'
 import useNeedRoomForMacWinControls from './hooks/useNeedRoomForWinControls'
 import { useIsSmallScreen, useSidebarWidth } from './hooks/useScreenChange'
 import useVersion from './hooks/useVersion'
 import { navigateToSettings } from './modals/Settings'
 import { trackingEvent } from './packages/event'
-import platform from './platform'
-import { featureFlags } from './utils/feature-flags'
+import { getSidebarModalSx } from './sidebar-drawer'
 import icon from './static/icon.png'
-import { settingsStore, useLanguage } from './stores/settingsStore'
-import { taskSessionStore } from './stores/taskSessionStore'
+import { useLanguage } from './stores/settingsStore'
 import { useUIStore } from './stores/uiStore'
 import { installUpdate, useUpdateStore } from './stores/updateStore'
 import { CHATBOX_BUILD_PLATFORM, CHATBOX_BUILD_TARGET } from './variables'
+
+interface ChatboxWebViewPlugin {
+  setTextInteractionEnabled(options: { enabled: boolean }): Promise<void>
+}
+
+const ChatboxWebView = registerPlugin<ChatboxWebViewPlugin>('ChatboxWebView')
+
+function setIosTextInteractionEnabled(enabled: boolean) {
+  if (CHATBOX_BUILD_TARGET !== 'mobile_app' || CHATBOX_BUILD_PLATFORM !== 'ios') {
+    return
+  }
+
+  void ChatboxWebView.setTextInteractionEnabled({ enabled }).catch((error: unknown) => {
+    console.warn('Failed to update iOS text interaction:', error)
+  })
+}
 
 export default function Sidebar() {
   const { t } = useTranslation()
@@ -44,8 +60,7 @@ export default function Sidebar() {
   const showSidebar = useUIStore((s) => s.showSidebar)
   const setShowSidebar = useUIStore((s) => s.setShowSidebar)
   const setSidebarWidth = useUIStore((s) => s.setSidebarWidth)
-  const sidebarMode = useUIStore((s) => s.sidebarMode)
-  const setSidebarMode = useUIStore((s) => s.setSidebarMode)
+  const setOpenSearchDialog = useUIStore((s) => s.setOpenSearchDialog)
 
   const sessionListViewportRef = useRef<HTMLDivElement>(null)
 
@@ -54,11 +69,8 @@ export default function Sidebar() {
   const isSmallScreen = useIsSmallScreen()
 
   const [isResizing, setIsResizing] = useState(false)
-  const [showDevPane, setShowDevPane] = useState(false)
   const resizeStartX = useRef<number>(0)
   const resizeStartWidth = useRef<number>(0)
-  const showDebugDevPane =
-    typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('debug') === 'true'
 
   const { needRoomForMacWindowControls } = useNeedRoomForMacWinControls()
 
@@ -77,15 +89,6 @@ export default function Sidebar() {
       setShowSidebar(false)
     }
     trackingEvent('open_image_creator', { event_category: 'user' })
-  }, [isSmallScreen, setShowSidebar, navigate])
-
-  const handleCreateNewTask = useCallback(() => {
-    taskSessionStore.getState().setCurrentTaskId(null)
-    navigate({ to: '/task' })
-    if (isSmallScreen) {
-      setShowSidebar(false)
-    }
-    trackingEvent('create_new_task', { event_category: 'user' })
   }, [isSmallScreen, setShowSidebar, navigate])
 
   const handleResizeStart = useCallback(
@@ -123,6 +126,14 @@ export default function Sidebar() {
     }
   }, [isResizing, language, setSidebarWidth])
 
+  useEffect(() => {
+    setIosTextInteractionEnabled(!(isSmallScreen && showSidebar))
+
+    return () => {
+      setIosTextInteractionEnabled(true)
+    }
+  }, [isSmallScreen, showSidebar])
+
   return (
     <SwipeableDrawer
       anchor={language === 'ar' ? 'right' : 'left'}
@@ -133,6 +144,7 @@ export default function Sidebar() {
       ModalProps={{
         keepMounted: true, // Better open performance on mobile.
         disableEnforceFocus: true, // 关闭 focus trap，避免在侧边栏打开时弹出的 modal 中 input 无法点击
+        sx: getSidebarModalSx(showSidebar),
       }}
       sx={{
         '& .MuiDrawer-paper': {
@@ -157,14 +169,27 @@ export default function Sidebar() {
         className="relative"
       >
         {needRoomForMacWindowControls && <Box className="title-bar flex-[0_0_44px]" />}
-        <Flex align="center" justify="space-between" px="md" py="sm">
-          <Flex align="center" gap="sm">
-            <Flex align="center" gap="sm" onClick={() => navigate({ to: '/about' })} style={{ cursor: 'pointer' }}>
+        <Flex
+          align="center"
+          justify="space-between"
+          gap="xs"
+          px="md"
+          py="sm"
+          className="border-0 border-b border-solid border-chatbox-border-primary"
+        >
+          <Flex align="center" gap="sm" style={{ minWidth: 0, flex: 1 }}>
+            <Flex
+              align="center"
+              gap="sm"
+              onClick={() => navigate({ to: '/about' })}
+              style={{ cursor: 'pointer', minWidth: 0 }}
+            >
               <Image src={icon} w={20} h={20} />
-              <Text span c="chatbox-secondary" size="xl" lh={1.2} fw="700">
+              <Text span c="chatbox-secondary" size="xl" lh={1.2} fw="700" truncate>
                 Chatbox
               </Text>
-              {/\d/.test(versionHook.version) && (
+              {/* Desktop shows the version in the bottom About link, so only surface it here on mobile */}
+              {isSmallScreen && /\d/.test(versionHook.version) && (
                 <Text span c="chatbox-tertiary" size="sm">
                   {versionHook.version}
                 </Text>
@@ -173,79 +198,58 @@ export default function Sidebar() {
             {FORCE_ENABLE_DEV_PAGES && <ThemeSwitchButton size="xs" />}
           </Flex>
 
-          <Tooltip label={t('Collapse')} openDelay={1000} withArrow>
-            <ActionIcon variant="subtle" color="chatbox-tertiary" size={20} onClick={() => setShowSidebar(false)}>
-              <IconLayoutSidebarLeftCollapse />
-            </ActionIcon>
-          </Tooltip>
+          <Flex align="center" gap={2} style={{ flexShrink: 0 }}>
+            <Tooltip label={t('Search')} openDelay={1000} withArrow>
+              <ActionIcon
+                variant="subtle"
+                color="chatbox-tertiary"
+                size={26}
+                radius="md"
+                onClick={() => setOpenSearchDialog(true, true)}
+              >
+                <IconSearch size={18} />
+              </ActionIcon>
+            </Tooltip>
+            <Tooltip label={t('Clear Conversation List')} openDelay={1000} withArrow>
+              <ActionIcon
+                variant="subtle"
+                color="chatbox-tertiary"
+                size={26}
+                radius="md"
+                onClick={() => NiceModal.show('clear-session-list')}
+              >
+                <IconArchive size={18} />
+              </ActionIcon>
+            </Tooltip>
+            <Tooltip label={t('Collapse')} openDelay={1000} withArrow>
+              <ActionIcon
+                variant="subtle"
+                color="chatbox-tertiary"
+                size={26}
+                radius="md"
+                onClick={() => setShowSidebar(false)}
+              >
+                <IconLayoutSidebarLeftCollapse size={18} />
+              </ActionIcon>
+            </Tooltip>
+          </Flex>
         </Flex>
 
-        {featureFlags.taskMode && (
-          <SegmentedControl
-            value={sidebarMode}
-            onChange={(val) => {
-              setSidebarMode(val as 'chat' | 'task')
-              const { startupPage } = settingsStore.getState()
-              if (val === 'chat') {
-                const sid = JSON.parse(localStorage.getItem('_currentSessionIdCachedAtom') || '""') as string
-                if (sid && startupPage === 'session') {
-                  navigate({ to: '/session/$sessionId', params: { sessionId: sid } })
-                } else {
-                  navigate({ to: '/' })
-                }
-              } else if (val === 'task') {
-                const taskId = taskSessionStore.getState().currentTaskId
-                if (taskId && startupPage === 'session') {
-                  navigate({ to: '/task/$taskId', params: { taskId } })
-                } else {
-                  navigate({ to: '/task' })
-                }
-              }
-            }}
-            data={[
-              { label: t('Chat'), value: 'chat' },
-              { label: t('Task'), value: 'task' },
-            ]}
-            size="xs"
-            fullWidth
-            mx="xs"
-            mb="xs"
-          />
-        )}
-
-        {sidebarMode === 'task' && featureFlags.taskMode ? (
-          <TaskSessionList />
-        ) : (
-          <SessionList sessionListViewportRef={sessionListViewportRef} />
-        )}
+        <SessionList sessionListViewportRef={sessionListViewportRef} />
 
         <SidebarUpdateBanner />
 
         <Stack gap={0} px="xs" pb="xs">
           <Divider />
           <Stack gap="xs" pt="xs" mb="xs">
-            {sidebarMode === 'task' && featureFlags.taskMode ? (
-              <Button variant="light" fullWidth onClick={handleCreateNewTask}>
-                <ScalableIcon icon={IconCirclePlus} className="mr-2" />
-                {t('New Task')}
-              </Button>
-            ) : (
-              <>
-                <Button variant="light" fullWidth data-testid="new-chat-button" onClick={handleCreateNewSession}>
-                  <ScalableIcon icon={IconCirclePlus} className="mr-2" />
-                  {t('New Chat')}
-                </Button>
-                <Button
-                  variant="light"
-                  fullWidth
-                  data-testid="new-image-button"
-                  onClick={handleCreateNewPictureSession}
-                >
-                  <ScalableIcon icon={IconPhotoPlus} className="mr-2" />
-                  {t('Create Image')}
-                </Button>
-              </>
-            )}
+            <Button variant="light" fullWidth data-testid="new-chat-button" onClick={handleCreateNewSession}>
+              <ScalableIcon icon={IconCirclePlus} className="mr-2" />
+              {t('New Chat')}
+            </Button>
+            <Button variant="light" fullWidth data-testid="new-image-button" onClick={handleCreateNewPictureSession}>
+              <ScalableIcon icon={IconPhotoPlus} className="mr-2" />
+              {t('Create Image')}
+            </Button>
           </Stack>
 
           {isSmallScreen ? (
@@ -353,21 +357,6 @@ export default function Sidebar() {
               language === 'ar' ? '-left-1' : '-right-1'
             )}
           />
-        )}
-        {showDebugDevPane && (
-          <>
-            <Button
-              size="xs"
-              variant="filled"
-              color="dark"
-              leftSection={<ScalableIcon icon={IconCode} size={14} />}
-              className={clsx('absolute z-[2] shadow-md', isSmallScreen ? 'bottom-20 right-3' : 'bottom-3 right-3')}
-              onClick={() => setShowDevPane(true)}
-            >
-              Dev
-            </Button>
-            <SessionAttachmentRagDevPane opened={showDevPane} onClose={() => setShowDevPane(false)} />
-          </>
         )}
       </Stack>
     </SwipeableDrawer>

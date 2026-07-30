@@ -56,10 +56,6 @@ const ProviderSpotlight: FC<{
 
     return [
       {
-        group: String(t('Quick Actions')),
-        actions: quickActions,
-      },
-      {
         group: String(t('Popular')),
         actions: featured.map((p) => ({
           id: `provider-${p.id}`,
@@ -83,6 +79,10 @@ const ProviderSpotlight: FC<{
           leftSection: <ProviderIconImage providerId={p.id} size={24} />,
         })),
       },
+      {
+        group: String(t('Custom Additions')),
+        actions: quickActions,
+      },
     ]
   }, [allSystemProviders, onSelectProvider, onAddCustomProvider, onImportProvider, isImporting, t])
 
@@ -92,7 +92,7 @@ const ProviderSpotlight: FC<{
       actions={actions}
       nothingFound={String(t('Nothing found...'))}
       scrollable
-      maxHeight="min(600px, calc(100vh - 180px))"
+      maxHeight="min(600px, calc(100dvh - 180px))"
       shortcut={null}
       classNames={{ actionsList: classes.actionsList }}
       searchProps={{

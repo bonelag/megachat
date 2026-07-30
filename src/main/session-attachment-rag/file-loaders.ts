@@ -20,7 +20,7 @@ import {
   runVectorWrite,
   updateSessionAttachmentIndexingProgress,
 } from './db'
-import { getSessionAttachmentEmbeddingProvider } from './model-providers'
+import { getSessionAttachmentEmbeddingProviderWithResolution } from './model-providers'
 
 const log = getLogger('session-attachment-rag:file-loaders')
 const BATCH_SIZE = 50
@@ -100,9 +100,6 @@ async function processAttachment(attachmentId: number) {
   if (!content?.trim()) {
     throw new Error('Attachment content not found or empty')
   }
-  log.debug(
-    `${SESSION_ATTACHMENT_RAG_LOG_PREFIX} [FILE] Loaded parsed content: attachmentId=${attachment.id}, chars=${content.length}, bytes=${new TextEncoder().encode(content).length}`
-  )
 
   const chunkingPipeline = selectAttachmentChunkingPipeline(attachment.filename)
   await updateSessionAttachmentIndexingProgress(attachmentId, {
@@ -150,7 +147,11 @@ async function processAttachment(attachmentId: number) {
   })
 
   const indexName = `sa_${attachment.id}`
-  const embeddingModel = await getSessionAttachmentEmbeddingProvider()
+  const embeddingResolution = await getSessionAttachmentEmbeddingProviderWithResolution()
+  const embeddingModel = embeddingResolution.provider
+  log.debug(
+    `${SESSION_ATTACHMENT_RAG_LOG_PREFIX} [MODEL] Actual embedding model selected: attachmentId=${attachment.id}, source=${embeddingResolution.source}, model=${embeddingResolution.modelString}`
+  )
 
   const embeddedTexts = children.map((child) =>
     buildEmbeddedText({

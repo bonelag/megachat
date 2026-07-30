@@ -1,7 +1,14 @@
 import NiceModal from '@ebay/nice-modal-react'
 import { ActionIcon, Avatar, Flex, Highlight, Stack, Text } from '@mantine/core'
 import type { CopilotDetail } from '@shared/types'
-import { IconDots, IconEdit, IconMessageCircle2Filled, IconStar, IconStarFilled, IconTrash } from '@tabler/icons-react'
+import {
+  IconDots,
+  IconEdit,
+  IconMessageCircle2Filled,
+  IconPinned,
+  IconPinnedFilled,
+  IconTrash,
+} from '@tabler/icons-react'
 import { useNavigate } from '@tanstack/react-router'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -123,8 +130,8 @@ export function CopilotItem({ copilot, type = 'local', highlightTerm = '' }: Cop
                   ...(copilot.starred
                     ? [
                         {
-                          text: t('Unstar'),
-                          icon: IconStarFilled,
+                          text: t('Unpin'),
+                          icon: IconPinnedFilled,
                           onClick: () => {
                             store.addOrUpdate({
                               ...copilot,
@@ -135,8 +142,8 @@ export function CopilotItem({ copilot, type = 'local', highlightTerm = '' }: Cop
                       ]
                     : [
                         {
-                          text: t('Star'),
-                          icon: IconStar,
+                          text: t('Pin'),
+                          icon: IconPinned,
                           onClick: () => {
                             store.addOrUpdate({
                               ...copilot,
@@ -166,7 +173,7 @@ export function CopilotItem({ copilot, type = 'local', highlightTerm = '' }: Cop
                   onClick={(e) => e.stopPropagation()}
                 >
                   {type === 'local' && copilot.starred ? (
-                    <ScalableIcon icon={IconStarFilled} size={16} />
+                    <ScalableIcon icon={IconPinnedFilled} size={16} />
                   ) : (
                     <ScalableIcon icon={IconDots} size={16} />
                   )}

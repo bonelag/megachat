@@ -2,7 +2,7 @@
 /** biome-ignore-all lint/suspicious/noFallthroughSwitchClause: migrate */
 
 import * as defaults from '@shared/defaults'
-import { type ProviderSettings, type Settings, SettingsSchema } from '@shared/types'
+import { type Settings, SettingsSchema } from '@shared/types'
 import type { DocumentParserConfig } from '@shared/types/settings'
 import deepmerge from 'deepmerge'
 import type { WritableDraft } from 'immer'
@@ -19,15 +19,25 @@ const log = getLogger('settings-store')
 /**
  * Returns platform-specific default document parser configuration.
  * - Desktop: 'local' (has full Node.js environment for local parsing)
- * - Mobile/Web: 'none' (only basic text file support by default, user can enable chatbox-ai)
+ * - Mobile/Web: 'chatbox-ai' (local-first parsing with Chatbox AI cloud fallback)
  */
 export function getPlatformDefaultDocumentParser(): DocumentParserConfig {
-  return platform.type === 'desktop' ? { type: 'local' } : { type: 'none' }
+  return platform.type === 'desktop' ? { type: 'local' } : { type: 'chatbox-ai' }
 }
 
 type Action = {
   setSettings: (nextStateOrUpdater: Partial<Settings> | ((state: WritableDraft<Settings>) => void)) => void
   getSettings: () => Settings
+}
+
+function mergeWithDefaultSettings(persisted: unknown): Settings {
+  const persistedSettings =
+    persisted && typeof persisted === 'object' && !Array.isArray(persisted) ? (persisted as Partial<Settings>) : {}
+  const mergedSettings = deepmerge<Settings, Partial<Settings>>(defaults.settings(), persistedSettings, {
+    arrayMerge: (_target, source) => source,
+  })
+  const parsedSettings = SettingsSchema.safeParse(mergedSettings)
+  return parsedSettings.success ? parsedSettings.data : mergedSettings
 }
 
 export const settingsStore = createStore<Settings & Action>()(
@@ -62,7 +72,7 @@ export const settingsStore = createStore<Settings & Action>()(
           },
           removeItem: async (name) => await storage.removeItem(name),
         })),
-        version: 4,
+        version: 5,
         partialize: (state) => {
           try {
             return SettingsSchema.parse(state)
@@ -70,6 +80,10 @@ export const settingsStore = createStore<Settings & Action>()(
             return state
           }
         },
+        merge: (persisted, current) => ({
+          ...current,
+          ...mergeWithDefaultSettings(persisted),
+        }),
         migrate: (persisted: any, version) => {
           // merge the newly added fields in defaults.settings() into the persisted values (deep merge).
           const settings: any = deepmerge(defaults.settings(), persisted, {
@@ -95,6 +109,11 @@ export const settingsStore = createStore<Settings & Action>()(
                 settings.skills = defaults.settings().skills
               } else if (settings.skills.translationEnabled === undefined) {
                 settings.skills.translationEnabled = true
+              }
+            case 3:
+            case 4:
+              if (platform.type !== 'desktop' && settings.extension?.documentParser?.type === 'none') {
+                settings.extension.documentParser.type = 'chatbox-ai'
               }
             default:
               break

@@ -1,23 +1,25 @@
 import NiceModal from '@ebay/nice-modal-react'
-import { Stack, Box, Button } from '@mantine/core'
+import { Box, Button } from '@mantine/core'
 import type { Message, ModelProvider } from '@shared/types'
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { useCallback, useEffect, useMemo, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useStore } from 'zustand'
 import { JK_PAGE_NAMES } from '@/analytics/jk-events'
-import { ChatboxWelcomeCard } from '@/components/common/ChatboxWelcomeCard'
 import MessageList, { type MessageListRef } from '@/components/chat/MessageList'
+import { ChatboxWelcomeCard } from '@/components/common/ChatboxWelcomeCard'
 import { ErrorBoundary } from '@/components/common/ErrorBoundary'
-import InputBox from '@/components/InputBox/InputBox'
+import InputBox, { type InputBoxPayload } from '@/components/InputBox/InputBox'
 import Header from '@/components/layout/Header'
 import Page from '@/components/layout/Page'
-import { useProviders } from '@/hooks/useProviders'
-import { defaultSessionsForCN, defaultSessionsForEN } from '@/packages/initial_data'
 import ThreadHistoryDrawer from '@/components/session/ThreadHistoryDrawer'
+import { useProviders } from '@/hooks/useProviders'
+import useVersion from '@/hooks/useVersion'
+import { defaultSessionsForCN, defaultSessionsForEN } from '@/packages/initial_data'
 import * as remote from '@/packages/remote'
 import { useAuthInfoStore } from '@/stores/authInfoStore'
 import { updateSession as updateSessionStore, useSession } from '@/stores/chatStore'
+import { applyChatboxLicenseDefaultModelToSession } from '@/stores/defaultChatModel'
 import { lastUsedModelStore } from '@/stores/lastUsedModelStore'
 import * as scrollActions from '@/stores/scrollActions'
 import { modifyMessage, removeCurrentThread, startNewThread, submitNewUserMessage } from '@/stores/sessionActions'
@@ -40,15 +42,26 @@ function RouteComponent() {
   const navigate = useNavigate()
   const { session: currentSession, isFetching } = useSession(currentSessionId)
   const { providers } = useProviders()
-  const hasLicense = useSettingsStore((s) => Boolean(s.licenseKey))
+  const licenseKey = useSettingsStore((s) => s.licenseKey)
+  const hasLicense = Boolean(licenseKey)
+  const licenseDetail = useSettingsStore((s) => s.licenseDetail)
+  const licensePlanName = useSettingsStore((s) => s.licensePlanName)
   const hasExpiredLicense = useSettingsStore((s) => s.hasExpiredLicense)
   const isLoggedIn = useAuthInfoStore((s) => Boolean(s.accessToken && s.refreshToken))
+  const { isExceeded, isExceededResolved } = useVersion()
   const widthFull = useUIStore((s) => s.widthFull)
   const setLastUsedChatModel = useStore(lastUsedModelStore, (state) => state.setChatModel)
   const setLastUsedPictureModel = useStore(lastUsedModelStore, (state) => state.setPictureModel)
   const welcomeCardMode = useMemo(
-    () => getHomeWelcomeCardMode({ providerCount: providers.length, isLoggedIn, hasLicense, hasExpiredLicense }),
-    [providers.length, isLoggedIn, hasLicense, hasExpiredLicense]
+    () =>
+      getHomeWelcomeCardMode({
+        providerCount: providers.length,
+        isLoggedIn,
+        hasLicense,
+        hasExpiredLicense,
+        hideForStoreReview: isExceeded || !isExceededResolved,
+      }),
+    [providers.length, isLoggedIn, hasLicense, hasExpiredLicense, isExceeded, isExceededResolved]
   )
 
   const currentMessageList = useMemo(() => (currentSession ? getAllMessageList(currentSession) : []), [currentSession])
@@ -56,6 +69,17 @@ function RouteComponent() {
     () => Boolean(currentSession && builtInTemplateSessionIds.has(currentSession.id) && welcomeCardMode !== 'none'),
     [currentSession, welcomeCardMode]
   )
+  const currentSessionWithDefaultModel = useMemo(() => {
+    if (!currentSession || !builtInTemplateSessionIds.has(currentSession.id)) {
+      return currentSession
+    }
+    return applyChatboxLicenseDefaultModelToSession(currentSession, {
+      licenseKey,
+      hasExpiredLicense,
+      licenseDetail,
+      licensePlanName,
+    })
+  }, [currentSession, hasExpiredLicense, licenseDetail, licenseKey, licensePlanName])
   const lastGeneratingMessage = useMemo(
     () => currentMessageList.find((m: Message) => m.generating),
     [currentMessageList]
@@ -90,6 +114,15 @@ function RouteComponent() {
       }
     }
   }, [currentSession?.settings, currentSession?.type, currentSession, setLastUsedChatModel, setLastUsedPictureModel])
+
+  useEffect(() => {
+    if (!currentSession || !currentSessionWithDefaultModel || currentSessionWithDefaultModel === currentSession) {
+      return
+    }
+    void updateSessionStore(currentSession.id, {
+      settings: currentSessionWithDefaultModel.settings,
+    })
+  }, [currentSession, currentSessionWithDefaultModel])
 
   const onSelectModel = useCallback(
     (provider: ModelProvider, modelId: string) => {
@@ -129,19 +162,16 @@ function RouteComponent() {
   }, [currentSession])
 
   const onSubmit = useCallback(
-    async ({
-      constructedMessage,
-      needGenerating = true,
-      onUserMessageReady,
-    }: {
-      constructedMessage: Message
-      needGenerating?: boolean
-      onUserMessageReady?: () => void
-    }) => {
+    async ({ constructedMessage, needGenerating = true, onUserMessageReady }: InputBoxPayload) => {
       messageListRef.current?.setIsNewMessage(true)
 
       if (!currentSession) {
         return
+      }
+      if (currentSessionWithDefaultModel && currentSessionWithDefaultModel !== currentSession) {
+        await updateSessionStore(currentSession.id, {
+          settings: currentSessionWithDefaultModel.settings,
+        })
       }
       messageListRef.current?.scrollToBottom('instant')
 
@@ -157,7 +187,7 @@ function RouteComponent() {
         onUserMessageReady,
       })
     },
-    [currentSession]
+    [currentSession, currentSessionWithDefaultModel]
   )
 
   const onClickSessionSettings = useCallback(() => {
@@ -182,14 +212,14 @@ function RouteComponent() {
   }, [currentSession, lastGeneratingMessage])
 
   const model = useMemo(() => {
-    if (!currentSession?.settings?.modelId || !currentSession?.settings?.provider) {
+    if (!currentSessionWithDefaultModel?.settings?.modelId || !currentSessionWithDefaultModel?.settings?.provider) {
       return undefined
     }
     return {
-      provider: currentSession.settings.provider,
-      modelId: currentSession.settings.modelId,
+      provider: currentSessionWithDefaultModel.settings.provider,
+      modelId: currentSessionWithDefaultModel.settings.modelId,
     }
-  }, [currentSession?.settings?.provider, currentSession?.settings?.modelId])
+  }, [currentSessionWithDefaultModel?.settings?.provider, currentSessionWithDefaultModel?.settings?.modelId])
 
   return currentSession ? (
     <div className="flex flex-col h-full">

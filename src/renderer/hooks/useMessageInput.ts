@@ -62,9 +62,15 @@ export function useMessageInput(initialMessage = '', _options: Partial<Options> 
   const clearDraft = useCallback(() => {
     _setMessageInput('')
     draftRef.current = ''
-    localStorage.removeItem(draftStorageKey)
     _debouncedStoreDraft.cancel()
+    localStorage.removeItem(draftStorageKey)
   }, [draftStorageKey, _debouncedStoreDraft])
+
+  useEffect(() => {
+    return () => {
+      _debouncedStoreDraft.cancel()
+    }
+  }, [_debouncedStoreDraft])
 
   useEffect(() => {
     if (options.saveDraft) {

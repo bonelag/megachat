@@ -154,8 +154,8 @@ describe('useTokenEstimation', () => {
         })
       )
 
-      // 'Hello world' = 7 tokens (deepseek)
-      expect(result.current.currentInputTokens).toBe(7)
+      // 'Hello world' = 4 tokens (deepseek: 10 letters × 0.3 + 1 space)
+      expect(result.current.currentInputTokens).toBe(4)
     })
   })
 

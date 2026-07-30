@@ -1,6 +1,6 @@
 # 工具与集成系统
 
-> Last updated: 2026-02
+> Last updated: 2026-07
 
 本文档描述 Chatbox Pro 的工具（Tool）与外部集成系统的产品设计。关于整体架构和进程模型，请参阅 [`./architecture.md`](./architecture.md)。
 
@@ -171,26 +171,52 @@ ToolCallPartUI (ParseLinkUI / WebSearchGroupUI / GeneralToolCallUI)
 
 ## Tool 构建与注入
 
-工具在 AI 生成调用前被动态组装。当前的构建逻辑分散在 `stream-text.ts` 中，按以下规则决定启用哪些工具：
+工具在 AI 生成调用前由 `buildToolsForSession()`（`src/renderer/stores/session/tools-builder.ts`）动态组装，调用方在 `orchestration.ts` 中把结果传给模型：
 
-1. **模型能力检查**：检查模型是否支持 Tool Use（`isSupportToolUse()`）
-2. **MCP 工具**：从 `mcpController.getAvailableTools()` 获取所有运行中 MCP 服务器的工具
-3. **文件工具**：当消息包含附件文件/链接，且模型支持 `read-file` 能力时启用
-4. **Web Search 工具**：当会话启用网页浏览，且模型支持 `web-browsing` 能力时启用
-5. **知识库工具**：当会话关联了知识库，且模型支持 `knowledge-base` 能力时启用
-6. **工具说明注入**：各工具集的 `description` 被收集并注入到系统提示词中
+1. **模型能力检查**：Agent 工具需要模型支持 `agent` scope；Web Search 使用独立的 `web-browsing` scope。
+2. **Web Search 工具**：当会话启用网页浏览且模型支持 `web-browsing` 时启用，独立于 Agent Mode。
+3. **文件工具**：没有 code execution provider 时，为附件文件/链接注入轻量读取工具。
+4. **Session Attachment RAG**：当会话已有 attachment ids 且模型支持 `read-file` 时注入。
+5. **Agent 工具**：编排层把 Auto 解析为有效的 On/Off；仅当有效模式为 On 且模型支持 `agent` scope 时，注入 code execution、文件系统、MCP、知识库、Skills 和 `user_exec`。
+6. **工具说明注入**：各工具集的 `description` 和 Skill 元数据被收集并注入到系统提示词中。
 
 ## Agent Skills 与 Tool 构建
 
 Skills 集成沿用 `buildToolsForSession()` 返回的 `{ tools, instructions }` 模式：
 
-1. 在 `instructions` 中注入 `<available_skills>` 元数据
+1. 在 `instructions` 中注入启用的技能元数据列表
 2. 在模型支持 Tool Use 时注册 `load_skill` 工具
 3. 由模型在命中场景时再加载技能全文（渐进披露）
 
 这样既保留了技能扩展能力，也避免在每次请求中注入所有技能正文带来的 token 膨胀。
 
 `buildToolsForSession()` 函数（`src/renderer/stores/session/tools-builder.ts`）已实现，统一封装上述逻辑，返回 `{ tools, instructions }` 结构。调用方通过 `orchestration.ts` 使用该函数完成工具组装。
+
+### Skills 相关工具
+
+Agent Mode 下注册 Skills 相关工具：
+
+| 工具 | 说明 | 门控 |
+|------|------|------|
+| `load_skill` | 按名称加载技能全文指令 | 始终可用（auto 模式初始即可调用） |
+| `chatbox_cli` | Chatbox 产品 Skill 的受控虚拟 CLI（账号、只读设置、历史会话、异步生图） | 仅当内置产品 Skill 启用时注入；设置修改由模型引导用户在 UI 中完成；生图使用专属本地化审批卡，批准后等待后台回调而非模型轮询 |
+| `user_exec` | 在用户真实环境执行命令，内置审批机制 | Auto 初始隐藏，加载 Skill 后可用 |
+| `install_skill` | 从沙箱路径安装技能（需 codeExecution） | code execution 可用时注入，Auto 初始可见 |
+
+`user_exec` 不再在 Auto 初始阶段暴露，避免未加载 Skill 时模型直接尝试操作用户真实环境。`install_skill` 保留为可见工具，用于从已准备好的沙箱路径安装新技能。
+
+### Claude Code Skills 发现
+
+`discoverClaudeSkills()`（`src/main/skills/discovery.ts`）扫描 `~/.claude/skills/` 目录：
+
+- 跟随 symlink（`fs.statSync` + `fs.realpathSync`），按真实路径去重
+- 名称规范化为 kebab-case（`normalizeClaudeSkillName`）
+- Chatbox Skills 同名时优先（`excludeNames` 参数）
+- `source.type` 标记为 `'claude-code'`
+
+### Skills 发现缓存
+
+Renderer 侧缓存发现结果 30 秒（`SKILLS_CACHE_TTL`），避免每次生成发起 IPC 调用。安装/删除技能后调用 `resetSkillsCache()` 强制刷新。
 
 ## 已完成的重构
 
@@ -202,15 +228,15 @@ Model Chat Refactor 中的核心部分已落地：
 - **buildToolsForSession()**：统一工具构建函数（`src/renderer/stores/session/tools-builder.ts`），根据会话配置和模型能力组装工具集与系统提示词注入指令
 - **Orchestration 层**：`src/renderer/stores/session/orchestration.ts` 组合 ContextBuilder → buildToolsForSession → chatStream 完成完整的 AI 调用流程
 
-## Sandbox 工具集（Task 模式）
+## Code Execution 工具集（Chat 模式）
 
-Task 模式引入了第四类工具集——Sandbox 工具集（`toolsets/sandbox.ts`），为 AI 提供本地代码执行和文件操作能力。与其他工具集不同，Sandbox 工具通过 Electron IPC 调用 Main 进程中的沙箱管理器执行，所有操作在 OS 级沙箱中隔离运行。
+Chat 模式引入了第五类工具集——Code Execution 工具集（`toolsets/code-execution.ts`），为 Chat 对话中的 AI 提供代码执行、文件读取和文件生成能力。包含 3 个核心工具：`code_execution`（代码执行）、`read_file`（文件读取，支持行级分页）、`create_download`（文件下载）。另有 3 个 Skills 相关辅助工具：`load_skill`、`user_exec`（用户环境命令执行，含审批机制）、`install_skill`（沙箱安装技能）。
 
-包含 7 个工具：`sandbox_bash`（Shell 执行）、`sandbox_read`（文件读取）、`sandbox_write`（文件写入）、`sandbox_edit`（精确替换）、`sandbox_grep`（内容搜索）、`sandbox_ls`（目录列表）、`sandbox_find`（文件查找）。
+Code Execution 面向 Chat 用户（隐藏底层沙箱细节、自动临时目录、文件上传注入、产物展示），通过 Agent Mode 控制注入。旧的 `sandbox_*` toolset 已移除，历史消息由通用 tool-call UI 按工具名继续渲染。
 
-通过 `stream-text.ts` 的 `sandboxEnabled` 参数控制注入，仅在 Task 会话中启用，不影响普通 Chat 会话。
+文件读取和单目录列表通过结构化 Node helper 完成；递归发现和内容搜索使用应用内置 ripgrep；本地产物下载直接走持久化接口。因此核心文件工具在 Windows 上不依赖 Bash 或 WSL。
 
-详细技术设计参见 [`./task-mode.md`](./task-mode.md)。
+详细技术设计参见 [`./code-execution.md`](./code-execution.md)。
 
 ## 尚未实现的方向
 

@@ -1,4 +1,4 @@
-import { experimental_createMCPClient as createMCPClient } from '@ai-sdk/mcp'
+import { createMCPClient } from '@ai-sdk/mcp'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import type { ToolSet } from 'ai'
 import Emittery from 'emittery'
@@ -45,17 +45,26 @@ async function createClient(transportConfig: TransportConfig, name = 'chatbox-mc
       })
     } catch (err) {
       console.error('Streamable HTTP connection failed', err)
-      return await createMCPClient({
-        name,
-        transport: {
-          type: 'sse',
-          url: transportConfig.url,
-          headers: transportConfig.headers,
-        },
-        onUncaughtError(error: unknown) {
-          console.error('mcp:client:onUncaughtError', error)
-        },
-      })
+      try {
+        return await createMCPClient({
+          name,
+          transport: {
+            type: 'sse',
+            url: transportConfig.url,
+            headers: transportConfig.headers,
+          },
+          onUncaughtError(error: unknown) {
+            console.error('mcp:client:onUncaughtError', error)
+          },
+        })
+      } catch (fallbackError) {
+        const streamableMessage = err instanceof Error ? err.message : String(err)
+        const fallbackMessage = fallbackError instanceof Error ? fallbackError.message : String(fallbackError)
+        throw new Error(
+          `Streamable HTTP connection failed: ${streamableMessage}\nLegacy SSE fallback failed: ${fallbackMessage}`,
+          { cause: err }
+        )
+      }
     }
   }
   throw new Error('Unknown transport type')
@@ -86,7 +95,10 @@ export class MCPServer extends Emittery<{ status: MCPServerStatus }> {
     this.status = { state: 'starting' }
     try {
       this.client = await createClient(this.transportConfig)
-      this.tools = await this.client.tools()
+      // @ai-sdk/mcp can resolve a newer @ai-sdk/provider-utils patch than `ai`.
+      // The returned tools share the same runtime schema contract, but TypeScript
+      // treats the two package instances' schema symbols as distinct.
+      this.tools = (await this.client.tools()) as unknown as ToolSet
     } catch (err) {
       console.error('mcp:client:start', err)
       this.status = { state: 'idle', error: (err as Error).message }
@@ -206,8 +218,13 @@ export const mcpController = {
             try {
               return await rawExecute?.(args, options)
             } catch (err) {
-              // 返回而非抛出，否则会导致流程中断
-              return err
+              // 返回而非抛出，否则会导致流程中断。
+              // 必须返回可 JSON 序列化的结构：直接返回原始 Error/MCPClientError 会把脏数据写进对话历史，
+              // 下次组装 ModelMessage[] 时 AI SDK 本地校验会抛 AI_InvalidPromptError，导致请求发不出去。
+              return {
+                isError: true,
+                content: [{ type: 'text', text: err instanceof Error ? err.message : String(err) }],
+              }
             }
           },
         }

@@ -2,10 +2,10 @@
  * ActionButton - Reusable button for login and provider settings actions
  */
 
-import { Box, Button, Flex, Modal, Radio, Stack, Text } from '@mantine/core'
+import { Box, Button, Flex, Group, Modal, Radio, Stack, Text } from '@mantine/core'
 import { IconCirclePlus, IconExternalLink, IconId, IconInfoCircle, IconSettings } from '@tabler/icons-react'
 import { useNavigate } from '@tanstack/react-router'
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { trackJkClickEvent } from '@/analytics/jk'
 import { JK_EVENTS, JK_PAGE_NAMES } from '@/analytics/jk-events'
@@ -13,7 +13,9 @@ import { ScalableIcon } from '@/components/common/ScalableIcon'
 import { navigateToSettings } from '@/modals/Settings'
 import { openLinkWithAuth } from '@/packages/openLinkWithAuth'
 import { buildChatboxUrl, getUserProfile, listLicensesByUser, type UserLicense } from '@/packages/remote'
+import platform from '@/platform'
 import { EmailCodeLoginModal } from '@/routes/settings/provider/chatbox-ai/-components/EmailCodeLoginModal'
+import guideRedirectLoadingGif from '@/static/guide/guide-redirect-loading.gif'
 import { authInfoStore } from '@/stores/authInfoStore'
 import * as premiumActions from '@/stores/premiumActions'
 import { settingsStore, useLanguage } from '@/stores/settingsStore'
@@ -23,6 +25,7 @@ interface LoginButtonProps {
 }
 
 const GUIDE_ACTION_BUTTON_MAX_WIDTH = 320
+const AUTO_NEW_CHAT_DELAY_SECONDS = 3
 const guideActionButtonWidthStyle = {
   width: '100%',
   maxWidth: GUIDE_ACTION_BUTTON_MAX_WIDTH,
@@ -190,13 +193,15 @@ export function ProviderSettingsButton() {
   const { t } = useTranslation()
 
   return (
-    <Flex mt="md">
+    <Flex mt="md" style={guideActionButtonWidthStyle}>
       <Button
         leftSection={<ScalableIcon icon={IconSettings} size={18} />}
         onClick={() => navigateToSettings('/provider')}
-        variant="outline"
+        variant="light"
+        fullWidth
+        h={42}
       >
-        {t('Open Provider Settings')}
+        {t('Set up API')}
       </Button>
     </Flex>
   )
@@ -221,6 +226,126 @@ export function NewChatButton({ label }: NewChatButtonProps = {}) {
         {label ?? t('New Chat')}
       </Button>
     </Flex>
+  )
+}
+
+interface AutoNewChatLoadingProps {
+  waitForWindowFocusBeforeAutoNavigate?: boolean
+}
+
+export function AutoNewChatLoading({ waitForWindowFocusBeforeAutoNavigate }: AutoNewChatLoadingProps) {
+  const { t } = useTranslation()
+  const navigate = useNavigate()
+  const [remainingSeconds, setRemainingSeconds] = useState(AUTO_NEW_CHAT_DELAY_SECONDS)
+
+  useEffect(() => {
+    let cancelled = false
+    let countdownTimer: ReturnType<typeof setInterval> | undefined
+    let completeTimer: ReturnType<typeof setTimeout> | undefined
+
+    const clearTimers = () => {
+      if (countdownTimer) {
+        clearInterval(countdownTimer)
+        countdownTimer = undefined
+      }
+      if (completeTimer) {
+        clearTimeout(completeTimer)
+        completeTimer = undefined
+      }
+    }
+
+    const startCountdown = () => {
+      if (cancelled || countdownTimer || completeTimer || document.visibilityState !== 'visible') return
+
+      setRemainingSeconds(AUTO_NEW_CHAT_DELAY_SECONDS)
+      countdownTimer = setInterval(() => {
+        setRemainingSeconds((current) => Math.max(0, current - 1))
+      }, 1000)
+      completeTimer = setTimeout(() => {
+        clearTimers()
+        setRemainingSeconds(0)
+        void navigate({ to: '/' })
+      }, AUTO_NEW_CHAT_DELAY_SECONDS * 1000)
+    }
+
+    const cancelWindowFocusListener = waitForWindowFocusBeforeAutoNavigate
+      ? platform.onWindowFocused(startCountdown)
+      : undefined
+
+    const handleVisibilityChange = () => {
+      if (!waitForWindowFocusBeforeAutoNavigate && document.visibilityState === 'visible') {
+        startCountdown()
+      }
+    }
+
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+
+    const runInitialCheck = async () => {
+      if (waitForWindowFocusBeforeAutoNavigate) {
+        const isFocused = await platform.isWindowFocused().catch(() => false)
+        if (!cancelled && isFocused) {
+          startCountdown()
+        }
+        return
+      }
+
+      startCountdown()
+    }
+    void runInitialCheck()
+
+    return () => {
+      cancelled = true
+      clearTimers()
+      cancelWindowFocusListener?.()
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
+    }
+  }, [navigate, waitForWindowFocusBeforeAutoNavigate])
+
+  return (
+    <Group
+      mt="xs"
+      gap="sm"
+      align="center"
+      wrap="nowrap"
+      style={{
+        ...guideActionButtonWidthStyle,
+        maxWidth: 520,
+      }}
+    >
+      <Box
+        component="img"
+        src={guideRedirectLoadingGif}
+        alt=""
+        aria-hidden="true"
+        style={{
+          width: 72,
+          height: 72,
+          objectFit: 'contain',
+          flex: '0 0 auto',
+        }}
+      />
+      <Stack gap={2} flex={1}>
+        <Text
+          fw={700}
+          c="chatbox-brand"
+          style={{
+            fontSize: 16,
+            lineHeight: 1.25,
+          }}
+        >
+          {t('Opening a new chat...')}
+        </Text>
+        <Text
+          c="chatbox-brand"
+          style={{
+            fontSize: 14,
+            lineHeight: 1.35,
+          }}
+        >
+          {t('Sit back, relax. Chatbox will start a new chat in {{count}}s...', { count: remainingSeconds })}
+        </Text>
+      </Stack>
+    </Group>
   )
 }
 

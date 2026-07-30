@@ -11,19 +11,19 @@ export const useProviders = () => {
   useModelRegistryVersion()
 
   const { chatboxAIModels } = useChatboxAIModels()
-  const { setSettings, ...settings } = useSettingsStore((state) => state)
-  const providerSettingsMap = settings.providers
+  const setSettings = useSettingsStore((state) => state.setSettings)
+  const customProviders = useSettingsStore((state) => state.customProviders)
+  const favoritedModelsSetting = useSettingsStore((state) => state.favoritedModels)
+  const licenseKey = useSettingsStore((state) => state.licenseKey)
+  const providerSettingsMap = useSettingsStore((state) => state.providers)
 
-  const allProviderBaseInfos = useMemo(
-    () => [...SystemProviders(), ...(settings.customProviders || [])],
-    [settings.customProviders]
-  )
+  const allProviderBaseInfos = useMemo(() => [...SystemProviders(), ...(customProviders || [])], [customProviders])
   const providers = useMemo(
     () =>
       allProviderBaseInfos
         .map((p) => {
           const providerSettings = mergeSharedOAuthProviderSettings(p.id, providerSettingsMap)
-          if (p.id === ModelProviderEnum.ChatboxAI && settings.licenseKey) {
+          if (p.id === ModelProviderEnum.ChatboxAI && licenseKey) {
             return {
               ...p,
               ...providerSettings,
@@ -49,12 +49,12 @@ export const useProviders = () => {
           }
         })
         .filter((p) => !!p),
-    [providerSettingsMap, allProviderBaseInfos, chatboxAIModels, settings.licenseKey]
+    [providerSettingsMap, allProviderBaseInfos, chatboxAIModels, licenseKey]
   )
 
   const favoritedModels = useMemo(
     () =>
-      settings.favoritedModels
+      favoritedModelsSetting
         ?.map((m) => {
           const provider = providers.find((p) => p.id === m.provider)
           const model = (provider?.models || provider?.defaultSettings?.models)?.find((mm) => mm.modelId === m.model)
@@ -67,14 +67,14 @@ export const useProviders = () => {
           }
         })
         .filter((fm) => !!fm),
-    [settings.favoritedModels, providers]
+    [favoritedModelsSetting, providers]
   )
 
   const favoriteModel = useCallback(
     (provider: string, model: string) => {
       setSettings({
         favoritedModels: [
-          ...(settings.favoritedModels || []),
+          ...(favoritedModelsSetting || []),
           {
             provider,
             model,
@@ -82,16 +82,16 @@ export const useProviders = () => {
         ],
       })
     },
-    [settings, setSettings]
+    [favoritedModelsSetting, setSettings]
   )
 
   const unfavoriteModel = useCallback(
     (provider: string, model: string) => {
       setSettings({
-        favoritedModels: (settings.favoritedModels || []).filter((m) => m.provider !== provider || m.model !== model),
+        favoritedModels: (favoritedModelsSetting || []).filter((m) => m.provider !== provider || m.model !== model),
       })
     },
-    [settings, setSettings]
+    [favoritedModelsSetting, setSettings]
   )
 
   const isFavoritedModel = useCallback(

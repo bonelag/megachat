@@ -1,17 +1,24 @@
 import { buildContext } from '@shared/context'
 import type { AttachmentResolver } from '@shared/context/types'
 import { type CompactionPoint, createMessage, type Message, type SessionSettings } from '@shared/types'
+import type { AgentModeEntrySource } from '@/analytics/agent-mode'
 import * as chatStore from '../chatStore'
 import { createAttachmentResolver } from './attachment-resolver'
 import { createNewFork, findMessageLocation } from './forks'
+import { withSessionGenerationLock } from './generation-lock'
 import { insertMessageAfter } from './messages'
 import { orchestrateGeneration } from './orchestration'
 import { orchestratePictureGeneration } from './pictures'
 
-export async function generate(
+/** Internal generation entry point for callers that already hold the session generation lock. */
+export async function _generateWithoutSessionLock(
   sessionId: string,
   targetMsg: Message,
-  options?: { operationType?: 'send_message' | 'regenerate' }
+  options?: {
+    operationType?: 'send_message' | 'regenerate'
+    skipAgentModeSuggestion?: boolean
+    agentModeEntrySource?: AgentModeEntrySource
+  }
 ) {
   const session = await chatStore.getSession(sessionId)
   const settings = await chatStore.getSessionSettings(sessionId)
@@ -27,44 +34,66 @@ export async function generate(
   await orchestratePictureGeneration(sessionId, targetMsg, session, settings, options)
 }
 
+export function generate(
+  sessionId: string,
+  targetMsg: Message,
+  options?: {
+    operationType?: 'send_message' | 'regenerate'
+    skipAgentModeSuggestion?: boolean
+    agentModeEntrySource?: AgentModeEntrySource
+  }
+) {
+  return withSessionGenerationLock(sessionId, () => _generateWithoutSessionLock(sessionId, targetMsg, options))
+}
+
 /**
  * Insert and generate a new message below the target message
  * @param sessionId Session ID
  * @param msgId Message ID
  */
-export async function generateMore(sessionId: string, msgId: string) {
+async function generateMoreWithoutSessionLock(sessionId: string, msgId: string) {
   const newAssistantMsg = createMessage('assistant', '')
   newAssistantMsg.generating = true // prevent estimating token count before generating done
   await insertMessageAfter(sessionId, newAssistantMsg, msgId)
-  await generate(sessionId, newAssistantMsg, { operationType: 'regenerate' })
+  await _generateWithoutSessionLock(sessionId, newAssistantMsg, { operationType: 'regenerate' })
 }
 
-export async function generateMoreInNewFork(sessionId: string, msgId: string) {
-  await createNewFork(sessionId, msgId)
-  await generateMore(sessionId, msgId)
+export function generateMore(sessionId: string, msgId: string) {
+  return withSessionGenerationLock(sessionId, () => generateMoreWithoutSessionLock(sessionId, msgId))
+}
+
+export function generateMoreInNewFork(sessionId: string, msgId: string) {
+  return withSessionGenerationLock(sessionId, async () => {
+    await createNewFork(sessionId, msgId)
+    await generateMoreWithoutSessionLock(sessionId, msgId)
+  })
 }
 
 type GenerateMoreFn = (sessionId: string, msgId: string) => Promise<void>
 
-export async function regenerateInNewFork(
+export function regenerateInNewFork(sessionId: string, msg: Message, options?: { runGenerateMore?: GenerateMoreFn }) {
+  return withSessionGenerationLock(sessionId, () => regenerateInNewForkWithoutSessionLock(sessionId, msg, options))
+}
+
+async function regenerateInNewForkWithoutSessionLock(
   sessionId: string,
   msg: Message,
   options?: { runGenerateMore?: GenerateMoreFn }
 ) {
-  const runGenerateMore = options?.runGenerateMore ?? generateMore
+  const runGenerateMore = options?.runGenerateMore ?? generateMoreWithoutSessionLock
   const session = await chatStore.getSession(sessionId)
   if (!session) {
     return
   }
   const location = findMessageLocation(session, msg.id)
   if (!location) {
-    await generate(sessionId, msg, { operationType: 'regenerate' })
+    await _generateWithoutSessionLock(sessionId, msg, { operationType: 'regenerate' })
     return
   }
   const previousMessageIndex = location.index - 1
   if (previousMessageIndex < 0) {
     // If target message is the first message, regenerate directly
-    await generate(sessionId, msg, { operationType: 'regenerate' })
+    await _generateWithoutSessionLock(sessionId, msg, { operationType: 'regenerate' })
     return
   }
   const forkMessage = location.list[previousMessageIndex]

@@ -83,7 +83,6 @@ export const openaiResponsesProvider = defineProvider({
           ? config.providerSetting.models || openaiResponsesProvider.defaultSettings?.models
           : undefined,
         skipRemoteModelList: isOAuth,
-        forceStatelessResponses: isOAuth,
       },
       config.dependencies
     )

@@ -1,8 +1,7 @@
-import { MessageRoleEnum } from '@shared/types/session'
-import type { Message } from '@shared/types'
-import type { Meta, StoryObj } from '@storybook/react-vite'
-import React from 'react'
 import { Box, Stack, Text } from '@mantine/core'
+import type { Message } from '@shared/types'
+import { MessageRoleEnum } from '@shared/types/session'
+import type { Meta, StoryObj } from '@storybook/react-vite'
 import MessageErrTips from '../chat/MessageErrTips'
 
 const meta: Meta<typeof MessageErrTips> = {
@@ -61,6 +60,37 @@ export const GenericErrorBubbleLayout: StoryObj<typeof MessageErrTips> = {
     }),
     onRetry: () => alert('Retry clicked'),
     isBubbleLayout: true,
+  },
+}
+
+export const QuotaExhaustedReminder: StoryObj<typeof MessageErrTips> = {
+  name: 'Quota Exhausted — Reminder Card',
+  args: {
+    msg: makeErrorMessage({
+      error: 'Token Quota Exhausted',
+      errorCode: 10004,
+    }),
+  },
+}
+
+export const FreeQuotaExhaustedReminder: StoryObj<typeof MessageErrTips> = {
+  name: 'Free Daily Quota Exhausted — Reminder Card',
+  args: {
+    msg: makeErrorMessage({
+      error: 'Free Token Quota Exhausted',
+      errorCode: 20039,
+    }),
+  },
+}
+
+export const AgentModeRewardReminder: StoryObj<typeof MessageErrTips> = {
+  name: 'Agent Mode Reward — Reminder Card',
+  args: {
+    msg: makeErrorMessage({
+      error: 'Free Agent Mode Token Quota Exhausted',
+      errorCode: 20040,
+    }),
+    onRetry: () => alert('Continue task'),
   },
 }
 

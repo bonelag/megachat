@@ -1,4 +1,3 @@
-import * as Sentry from '@sentry/react'
 import { getProviderDefinition } from '../../../shared/providers'
 import type {
   ModelProvider,
@@ -49,12 +48,10 @@ export default abstract class BaseConfig implements ModelSettingUtil {
 
     const localOptionGroups = providerSettings.models || []
     const [remoteModels, providerApiModels] = await Promise.all([
-      this.listRemoteProviderModels().catch((e) => {
-        Sentry.captureException(e)
+      this.listRemoteProviderModels().catch(() => {
         return []
       }),
-      this.listProviderModels(providerSettings).catch((e) => {
-        Sentry.captureException(e)
+      this.listProviderModels(providerSettings).catch(() => {
         return []
       }),
     ])

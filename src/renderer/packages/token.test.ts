@@ -149,8 +149,8 @@ describe('sumCachedTokensFromMessages', () => {
         tokenCountMap: { default: 30, deepseek: 24 },
       }),
     ]
-    // 16 + 24 + (2 messages × 4 overhead) = 40 + 12 = 52
-    expect(sumCachedTokensFromMessages(messages, deepSeekModel)).toBe(52)
+    // 16 + 24 + (2 messages × 5 overhead: 3 tokensPerMessage + 2 DeepSeek role "user" tokens) = 40 + 10 = 50
+    expect(sumCachedTokensFromMessages(messages, deepSeekModel)).toBe(50)
   })
 
   it('should handle mixed scenario with some messages having cache and some not', () => {
@@ -228,10 +228,8 @@ describe('sumCachedTokensFromMessages', () => {
     const deepSeekTokens = sumCachedTokensFromMessages(messages, deepSeekModel)
     // 500 + (1 message × 4 overhead) = 504
     expect(defaultTokens).toBe(504)
-    // 400 + 3 (tokensPerMessage) + 2 (DeepSeek role tokens) = 405... but got 406
-    // DeepSeek role "user" = 2 tokens, so 400 + 3 + 2 = 405, but actual is 406
-    // Likely DeepSeek role estimation is 3 tokens: 400 + 3 + 3 = 406
-    expect(deepSeekTokens).toBe(406)
+    // 400 + 3 (tokensPerMessage) + 2 (DeepSeek role "user" tokens) = 405
+    expect(deepSeekTokens).toBe(405)
   })
 
   it('should use DeepSeek cache key for links when model is DeepSeek', () => {
@@ -252,8 +250,8 @@ describe('sumCachedTokensFromMessages', () => {
     const deepSeekTokens = sumCachedTokensFromMessages(messages, deepSeekModel)
     // 300 + (1 message × 4 overhead) = 304
     expect(defaultTokens).toBe(304)
-    // 250 + 3 (tokensPerMessage) + 3 (DeepSeek role tokens) = 256
-    expect(deepSeekTokens).toBe(256)
+    // 250 + 3 (tokensPerMessage) + 2 (DeepSeek role "user" tokens) = 255
+    expect(deepSeekTokens).toBe(255)
   })
 
   it('should handle messages with multiple files and links', () => {
@@ -287,8 +285,8 @@ describe('sumCachedTokensFromMessages', () => {
     ]
     // 10 + 100 + 150 + 200 + (1 message × 4 overhead) = 460 + 4 = 464
     expect(sumCachedTokensFromMessages(messages, openAIModel)).toBe(464)
-    // 10 + 80 + 120 + 160 + 3 (tokensPerMessage) + 3 (DeepSeek role tokens) = 370 + 6 = 376
-    expect(sumCachedTokensFromMessages(messages, deepSeekModel)).toBe(376)
+    // 10 + 80 + 120 + 160 + 3 (tokensPerMessage) + 2 (DeepSeek role "user" tokens) = 370 + 5 = 375
+    expect(sumCachedTokensFromMessages(messages, deepSeekModel)).toBe(375)
   })
 
   it('should prefer tokenCountMap over tokenCount', () => {
@@ -301,8 +299,8 @@ describe('sumCachedTokensFromMessages', () => {
     ]
     // 20 + (1 message × 4 overhead) = 24
     expect(sumCachedTokensFromMessages(messages, openAIModel)).toBe(24)
-    // 16 + 3 (tokensPerMessage) + 3 (DeepSeek role tokens) = 22
-    expect(sumCachedTokensFromMessages(messages, deepSeekModel)).toBe(22)
+    // 16 + 3 (tokensPerMessage) + 2 (DeepSeek role "user" tokens) = 21
+    expect(sumCachedTokensFromMessages(messages, deepSeekModel)).toBe(21)
   })
 
   it('should fall back to tokenCount when tokenCountMap cache key is missing', () => {
@@ -313,8 +311,8 @@ describe('sumCachedTokensFromMessages', () => {
         tokenCountMap: { default: 20 },
       }),
     ]
-    // Falls back to tokenCount: 10 + 3 (tokensPerMessage) + 3 (DeepSeek role tokens) = 16
-    expect(sumCachedTokensFromMessages(messages, deepSeekModel)).toBe(16)
+    // Falls back to tokenCount: 10 + 3 (tokensPerMessage) + 2 (DeepSeek role "user" tokens) = 15
+    expect(sumCachedTokensFromMessages(messages, deepSeekModel)).toBe(15)
   })
 })
 

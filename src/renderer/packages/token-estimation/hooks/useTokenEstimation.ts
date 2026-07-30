@@ -11,10 +11,11 @@ export interface UseTokenEstimationOptions {
   contextMessages: Message[]
   model?: { provider: string; modelId: string }
   modelSupportToolUseForFile: boolean
+  sandboxMode?: boolean
 }
 
 export function useTokenEstimation(options: UseTokenEstimationOptions): TokenEstimationResult {
-  const { sessionId, constructedMessage, contextMessages, model, modelSupportToolUseForFile } = options
+  const { sessionId, constructedMessage, contextMessages, model, modelSupportToolUseForFile, sandboxMode } = options
 
   const tokenizerType = useMemo(() => getTokenizerType(model), [model])
 
@@ -40,8 +41,9 @@ export function useTokenEstimation(options: UseTokenEstimationOptions): TokenEst
         contextMessages,
         tokenizerType,
         modelSupportToolUseForFile,
+        sandboxMode,
       }),
-    [constructedMessage, contextMessages, tokenizerType, modelSupportToolUseForFile]
+    [constructedMessage, contextMessages, tokenizerType, modelSupportToolUseForFile, sandboxMode]
   )
 
   const contextMessageIds = useMemo(() => new Set(contextMessages.map((m) => m.id)), [contextMessages])

@@ -4222,7 +4222,7 @@ export const MODELS_DEV_SNAPSHOT: ModelRegistryData = {
     'openai/gpt-5.2-chat': {
       modelId: 'openai/gpt-5.2-chat',
       type: 'chat',
-      capabilities: ['tool_use', 'reasoning', 'vision'],
+      capabilities: ['tool_use', 'vision'],
       contextWindow: 128000,
       maxOutput: 16384,
       name: 'GPT-5.2 Chat',
@@ -4234,7 +4234,7 @@ export const MODELS_DEV_SNAPSHOT: ModelRegistryData = {
     'openai/gpt-5-chat': {
       modelId: 'openai/gpt-5-chat',
       type: 'chat',
-      capabilities: ['reasoning', 'vision'],
+      capabilities: ['vision'],
       contextWindow: 400000,
       maxOutput: 128000,
       name: 'GPT-5 Chat (latest)',
@@ -4246,7 +4246,7 @@ export const MODELS_DEV_SNAPSHOT: ModelRegistryData = {
     'openai/gpt-5.1-chat': {
       modelId: 'openai/gpt-5.1-chat',
       type: 'chat',
-      capabilities: ['tool_use', 'reasoning', 'vision'],
+      capabilities: ['tool_use', 'vision'],
       contextWindow: 128000,
       maxOutput: 16384,
       name: 'GPT-5.1 Chat',
@@ -5456,7 +5456,7 @@ export const MODELS_DEV_SNAPSHOT: ModelRegistryData = {
     'gpt-5-chat-latest': {
       modelId: 'gpt-5-chat-latest',
       type: 'chat',
-      capabilities: ['reasoning', 'vision'],
+      capabilities: ['vision'],
       contextWindow: 400000,
       maxOutput: 128000,
       name: 'GPT-5 Chat (latest)',
@@ -5504,7 +5504,7 @@ export const MODELS_DEV_SNAPSHOT: ModelRegistryData = {
     'gpt-5.2-chat-latest': {
       modelId: 'gpt-5.2-chat-latest',
       type: 'chat',
-      capabilities: ['tool_use', 'reasoning', 'vision'],
+      capabilities: ['tool_use', 'vision'],
       contextWindow: 128000,
       maxOutput: 16384,
       name: 'GPT-5.2 Chat',
@@ -5852,7 +5852,7 @@ export const MODELS_DEV_SNAPSHOT: ModelRegistryData = {
     'gpt-5.1-chat-latest': {
       modelId: 'gpt-5.1-chat-latest',
       type: 'chat',
-      capabilities: ['tool_use', 'reasoning', 'vision'],
+      capabilities: ['tool_use', 'vision'],
       contextWindow: 128000,
       maxOutput: 16384,
       name: 'GPT-5.1 Chat',
@@ -5986,7 +5986,7 @@ export const MODELS_DEV_SNAPSHOT: ModelRegistryData = {
     'gpt-5-chat-latest': {
       modelId: 'gpt-5-chat-latest',
       type: 'chat',
-      capabilities: ['reasoning', 'vision'],
+      capabilities: ['vision'],
       contextWindow: 400000,
       maxOutput: 128000,
       name: 'GPT-5 Chat (latest)',
@@ -6034,7 +6034,7 @@ export const MODELS_DEV_SNAPSHOT: ModelRegistryData = {
     'gpt-5.2-chat-latest': {
       modelId: 'gpt-5.2-chat-latest',
       type: 'chat',
-      capabilities: ['tool_use', 'reasoning', 'vision'],
+      capabilities: ['tool_use', 'vision'],
       contextWindow: 128000,
       maxOutput: 16384,
       name: 'GPT-5.2 Chat',
@@ -6382,7 +6382,7 @@ export const MODELS_DEV_SNAPSHOT: ModelRegistryData = {
     'gpt-5.1-chat-latest': {
       modelId: 'gpt-5.1-chat-latest',
       type: 'chat',
-      capabilities: ['tool_use', 'reasoning', 'vision'],
+      capabilities: ['tool_use', 'vision'],
       contextWindow: 128000,
       maxOutput: 16384,
       name: 'GPT-5.1 Chat',

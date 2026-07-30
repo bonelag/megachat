@@ -8,6 +8,8 @@ export interface ElectronIPC {
   onUpdateDownloaded: (callback: () => void) => () => void
   addMcpStdioTransportEventListener: (transportId: string, event: string, callback?: (...args: any[]) => void) => void
   onNavigate: (callback: (path: string) => void) => () => void
+  // 内置 skill 后台同步完成（有更新）时由 main 推送，renderer 据此刷新 skill 列表与工具缓存
+  onSkillsBuiltinUpdated: (callback: () => void) => () => void
 
   // Auto-updater events
   onUpdaterChecking: (callback: () => void) => () => void

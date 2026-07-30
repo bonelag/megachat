@@ -29,6 +29,8 @@ export interface AnalyzeTokenRequirementsOptions {
   tokenizerType: TokenizerType
   /** Whether the model supports tool use for files (affects preview mode) */
   modelSupportToolUseForFile: boolean
+  /** Whether sandbox mode is active (files sent as metadata only) */
+  sandboxMode?: boolean
 }
 
 /**
@@ -86,7 +88,13 @@ interface MessageAttachmentsAnalysisResult {
  * @returns Analysis result with known tokens and pending tasks
  */
 export function analyzeTokenRequirements(options: AnalyzeTokenRequirementsOptions): AnalysisResult {
-  const { constructedMessage, contextMessages, tokenizerType, modelSupportToolUseForFile } = options
+  const {
+    constructedMessage,
+    contextMessages,
+    tokenizerType,
+    modelSupportToolUseForFile,
+    sandboxMode = false,
+  } = options
 
   const pendingTasks: Omit<ComputationTask, 'id' | 'createdAt' | 'sessionId'>[] = []
   let currentInputText = 0
@@ -107,7 +115,8 @@ export function analyzeTokenRequirements(options: AnalyzeTokenRequirementsOption
       tokenizerType,
       modelSupportToolUseForFile,
       true,
-      0
+      0,
+      sandboxMode
     )
     currentInputAttachments = attachmentsResult.tokens
     pendingTasks.push(...attachmentsResult.tasks)
@@ -132,7 +141,8 @@ export function analyzeTokenRequirements(options: AnalyzeTokenRequirementsOption
       tokenizerType,
       modelSupportToolUseForFile,
       false,
-      priorityIndex
+      priorityIndex,
+      sandboxMode
     )
     contextAttachments += attachmentsResult.tokens
     pendingTasks.push(...attachmentsResult.tasks)
@@ -215,12 +225,15 @@ function getTokenModel(tokenizerType: TokenizerType): { provider: string; modelI
  * @param messageIndex - Position in context (0 = most recent)
  * @returns Analysis result with tokens and tasks
  */
+import { SANDBOX_METADATA_BASE_TOKENS, SANDBOX_METADATA_PER_ITEM_TOKENS } from '@/packages/token'
+
 function analyzeMessageAttachments(
   message: Message,
   tokenizerType: TokenizerType,
   modelSupportToolUseForFile: boolean,
   isCurrentInput: boolean,
-  messageIndex: number
+  messageIndex: number,
+  sandboxMode: boolean
 ): MessageAttachmentsAnalysisResult {
   let totalTokens = 0
   const tasks: Omit<ComputationTask, 'id' | 'createdAt' | 'sessionId'>[] = []
@@ -230,6 +243,16 @@ function analyzeMessageAttachments(
     ...(message.files || []).map((f) => ({ attachment: f, type: 'file' as const })),
     ...(message.links || []).map((l) => ({ attachment: l, type: 'link' as const })),
   ]
+
+  if (allAttachments.length === 0) {
+    return { tokens: 0, tasks: [] }
+  }
+
+  // In sandbox mode, only metadata XML is sent — use fixed estimate, no computation tasks needed
+  if (sandboxMode) {
+    const metadataTokens = SANDBOX_METADATA_BASE_TOKENS + allAttachments.length * SANDBOX_METADATA_PER_ITEM_TOKENS
+    return { tokens: metadataTokens, tasks: [] }
+  }
 
   for (const { attachment, type } of allAttachments) {
     // Skip attachments without storage key (not yet uploaded/processed)

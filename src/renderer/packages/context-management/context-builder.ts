@@ -19,7 +19,7 @@ export interface BuildContextOptions {
 export function buildContextForAI(options: BuildContextOptions): Message[] {
   const { messages, compactionPoints, keepToolCallRounds = 2 } = options
 
-  const completedMessages = messages.filter((m) => !m.generating)
+  const completedMessages = messages.filter((m) => !m.generating && !m.isForkMarker)
 
   if (completedMessages.length === 0) {
     return []

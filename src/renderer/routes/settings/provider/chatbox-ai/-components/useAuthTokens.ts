@@ -31,6 +31,16 @@ export function useAuthTokens() {
 
       settingsStore.setState({ hasExpiredLicense: false })
 
+      // VibeDrop publish key, per-artifact slug map, and session publication
+      // history belong to the logged-in account; drop them on logout so the
+      // next account starts clean. (The key is also email-bound at read time as
+      // defense-in-depth.)
+      settingsStore.setState({
+        vibedropPublishKey: undefined,
+        vibedropSlugs: undefined,
+        vibedropSessionPublications: undefined,
+      })
+
       authInfoStore.getState().clearTokens()
 
       queryClient.removeQueries({ queryKey: ['userProfile'] })

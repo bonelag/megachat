@@ -5,6 +5,7 @@ import { useProviders } from '@/hooks/useProviders'
 import { useIsSmallScreen } from '@/hooks/useScreenChange'
 import { DesktopModelSelector } from './DesktopModelSelector'
 import { MobileModelSelector } from './MobileModelSelector'
+import { filterModelsForSelector } from './filterModels'
 
 export type { FavoriteModel } from './shared'
 // Re-export shared components and utilities
@@ -17,6 +18,7 @@ export type ModelSelectorProps = PropsWithChildren<
     onSelect?: (provider: ModelProvider | string, model: string) => void
     onDropdownOpen?: () => void
     modelFilter?: (model: ProviderModelInfo, providerId?: string) => boolean
+    modelDisabledCheck?: (model: ProviderModelInfo, providerId?: string) => string | undefined
     selectedProviderId?: string
     selectedModelId?: string
     searchPosition?: 'top' | 'bottom'
@@ -32,6 +34,7 @@ export const ModelSelector = forwardRef<HTMLDivElement, ModelSelectorProps>(
       onDropdownOpen,
       children,
       modelFilter,
+      modelDisabledCheck,
       selectedProviderId,
       selectedModelId,
       searchPosition = 'bottom',
@@ -45,14 +48,12 @@ export const ModelSelector = forwardRef<HTMLDivElement, ModelSelectorProps>(
 
     const filteredProviders = useMemo(() => {
       const filtered = providers.map((provider) => {
-        const models = provider.models?.filter(
+        const models = filterModelsForSelector(provider.models, modelFilter, provider.id)?.filter(
           (model) =>
-            (!model.type || model.type === 'chat') &&
-            (provider.id.toLowerCase().includes(search.toLowerCase()) ||
-              provider.name.toLowerCase().includes(search.toLowerCase()) ||
-              model.nickname?.toLowerCase().includes(search.toLowerCase()) ||
-              model.modelId?.toLowerCase().includes(search.toLowerCase())) &&
-            (!modelFilter || modelFilter(model, provider.id))
+            provider.id.toLowerCase().includes(search.toLowerCase()) ||
+            provider.name.toLowerCase().includes(search.toLowerCase()) ||
+            model.nickname?.toLowerCase().includes(search.toLowerCase()) ||
+            model.modelId?.toLowerCase().includes(search.toLowerCase())
         )
         return {
           ...provider,
@@ -96,6 +97,7 @@ export const ModelSelector = forwardRef<HTMLDivElement, ModelSelectorProps>(
         onSearchChange={setSearch}
         onOptionSubmit={handleOptionSubmit}
         modelFilter={modelFilter}
+        modelDisabledCheck={modelDisabledCheck}
       >
         {children}
       </MobileModelSelector>
@@ -114,6 +116,7 @@ export const ModelSelector = forwardRef<HTMLDivElement, ModelSelectorProps>(
         onOptionSubmit={handleOptionSubmit}
         onDropdownOpen={onDropdownOpen}
         modelFilter={modelFilter}
+        modelDisabledCheck={modelDisabledCheck}
         comboboxProps={comboboxProps}
         searchPosition={searchPosition}
       >

@@ -1,16 +1,27 @@
 import * as Sentry from '@sentry/react'
+import { createSentryEventProcessor } from '@shared/utils/sentry_policy'
+import { initSettingsStore, settingsStore } from '@/stores/settingsStore'
 import { CHATBOX_BUILD_PLATFORM, CHATBOX_BUILD_TARGET, NODE_ENV } from '@/variables'
-import { initSettingsStore } from '@/stores/settingsStore'
 import platform from '../platform'
 
-void (async () => {
+const processSentryEvent = createSentryEventProcessor({
+  normalSampleRate: 0.1,
+  source: 'renderer',
+})
+
+let sentryInitPromise: Promise<boolean> | undefined
+
+async function initializeSentry(): Promise<boolean> {
   try {
     const settings = await initSettingsStore()
     if (!settings.allowReportingAndTracking) {
-      return
+      return false
     }
 
     const version = await platform.getVersion().catch(() => 'unknown')
+    if (!settingsStore.getState().allowReportingAndTracking) {
+      return false
+    }
     Sentry.init({
       dsn: 'https://eca691c5e01ebfa05958fca1fcb487a9@sentry.midway.run/697',
       environment: NODE_ENV,
@@ -25,21 +36,43 @@ void (async () => {
           app_version: version,
           build_target: CHATBOX_BUILD_TARGET,
           build_platform: CHATBOX_BUILD_PLATFORM,
+          error_source: 'renderer',
         },
       },
-      beforeSend(event) {
-        if (event.tags?.errorBoundary) {
-          return event
+      beforeBreadcrumb(breadcrumb) {
+        // Console output is already persisted in local app logs and can contain user data.
+        return breadcrumb.category === 'console' ? null : breadcrumb
+      },
+      beforeSend(event, hint) {
+        if (!settingsStore.getState().allowReportingAndTracking) {
+          return null
         }
-        if (Math.random() < 0.1) {
-          return event
-        }
-        return null
+        return processSentryEvent(event, hint)
       },
     })
+    return true
   } catch (e) {
     console.error('Failed to initialize Sentry:', e)
+    return false
   }
-})()
+}
+
+export function initSentry(): Promise<boolean> {
+  sentryInitPromise ??= initializeSentry()
+  return sentryInitPromise
+}
+
+settingsStore.subscribe((settings, previousSettings) => {
+  if (settings.allowReportingAndTracking === previousSettings.allowReportingAndTracking) {
+    return
+  }
+
+  sentryInitPromise = undefined
+  if (settings.allowReportingAndTracking) {
+    void initSentry()
+  } else {
+    void Sentry.close(2000)
+  }
+})
 
 export default Sentry

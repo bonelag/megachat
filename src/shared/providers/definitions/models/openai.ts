@@ -7,6 +7,7 @@ import { createFetchWithProxy } from '../../../models/utils/fetch-proxy'
 import type { ProviderModelInfo } from '../../../types'
 import type { ModelDependencies } from '../../../types/adapters'
 import { normalizeOpenAIApiHostAndPath } from '../../../utils/llm_utils'
+import { normalizeOpenAIReasoningOptions } from '../../../utils/reasoning-control'
 
 interface Options {
   apiKey: string
@@ -84,13 +85,12 @@ export default class OpenAI extends AbstractAISDKModel {
   }
 
   protected getCallSettings(options: CallChatCompletionOptions) {
-    const isModelSupportReasoning = this.isSupportReasoning()
-    let providerOptions = {}
-    if (isModelSupportReasoning) {
-      providerOptions = {
-        openai: options.providerOptions?.openai || {},
-      }
-    }
+    const openaiOptions = normalizeOpenAIReasoningOptions(this.options.model.modelId, options.providerOptions?.openai)
+    const providerOptions = openaiOptions
+      ? {
+          openai: openaiOptions,
+        }
+      : undefined
 
     return {
       temperature: this.options.temperature,

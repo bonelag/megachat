@@ -1,16 +1,19 @@
-import * as Sentry from '@sentry/react'
+import {
+  LEGACY_PROVIDER_MODEL_KEYS,
+  type LegacyFlatSettings,
+  migrateLegacyProviderSettings,
+} from '@shared/migration/legacy-provider-settings'
 import {
   type ImageGeneration,
   type ModelProvider,
   ModelProviderEnum,
-  ModelProviderType,
   type Session,
   type SessionMeta,
   type Settings,
 } from '@shared/types'
 import dayjs from 'dayjs'
 import { getDefaultStore } from 'jotai'
-import { difference, intersection, keyBy, uniq, uniqBy } from 'lodash'
+import { difference, intersection, keyBy, uniq } from 'lodash'
 import oldStore from 'store'
 import { v4 as uuidv4 } from 'uuid'
 import {
@@ -34,6 +37,7 @@ import { createSessionMetaRecordsFromLegacyList } from '@/utils/session-utils'
 import * as defaults from '../../shared/defaults'
 import { getLogger } from '../lib/utils'
 import { migrationProcessAtom } from './atoms/utilAtoms'
+import { withMigrationErrorContext } from './migration-error'
 import { getSessionMeta } from './sessionHelpers'
 
 const log = getLogger('migration')
@@ -185,8 +189,6 @@ export async function migrateOnData(dataStore: MigrateStore, canRelaunch = true)
     return
   }
 
-  const scope = Sentry.getCurrentScope()
-  scope.setTag('configVersion', configVersion)
   log.info(`migrateOnData: ${configVersion}, canRelaunch: ${canRelaunch}`)
 
   const migrateFunctions = [
@@ -208,9 +210,15 @@ export async function migrateOnData(dataStore: MigrateStore, canRelaunch = true)
   ]
 
   for (; configVersion < CurrentVersion; configVersion++) {
-    const _needRelaunch = await migrateFunctions[configVersion]?.(dataStore)
+    const _needRelaunch = await withMigrationErrorContext(
+      { configVersion, targetConfigVersion: configVersion + 1 },
+      async () => {
+        const result = await migrateFunctions[configVersion]?.(dataStore)
+        await dataStore.setData(StorageKey.ConfigVersion, configVersion + 1)
+        return result
+      }
+    )
     needRelaunch ||= !!_needRelaunch
-    await dataStore.setData(StorageKey.ConfigVersion, configVersion + 1)
     log.info(`migrate_${configVersion}_to_${configVersion + 1}, needRelaunch: ${needRelaunch}`)
   }
 
@@ -403,216 +411,8 @@ function setInitProcess(process: string) {
 async function migrate_9_to_10(dataStore: MigrateStore): Promise<boolean> {
   const oldSettings = (await dataStore.getData(StorageKey.Settings, null)) as any
   if (oldSettings) {
-    const {
-      aiProvider,
-      // openai
-      openaiKey,
-      apiHost,
-      model,
-      openaiCustomModel, // OpenAI 自定义模型的 ID
-      openaiCustomModelOptions,
-      openaiUseProxy, // deprecated
-
-      dalleStyle,
-      imageGenerateNum,
-
-      // azure
-      azureEndpoint,
-      azureDeploymentName,
-      azureDeploymentNameOptions,
-      azureDalleDeploymentName, // dall-e-3 的部署名称
-      azureApikey,
-      azureApiVersion,
-
-      // chatglm
-      chatglm6bUrl, // deprecated
-      chatglmApiKey,
-      chatglmModel,
-
-      // chatbox-ai
-      chatboxAIModel,
-
-      // claude
-      claudeApiKey,
-      claudeApiHost,
-      claudeModel,
-
-      // google gemini
-      geminiAPIKey,
-      geminiAPIHost,
-      geminiModel,
-
-      // ollama
-      ollamaHost,
-      ollamaModel,
-
-      // groq
-      groqAPIKey,
-      groqModel,
-
-      // deepseek
-      deepseekAPIKey,
-      deepseekModel,
-
-      // siliconflow
-      siliconCloudKey,
-      siliconCloudModel,
-
-      // LMStudio
-      lmStudioHost,
-      lmStudioModel,
-
-      // perplexity
-      perplexityApiKey,
-      perplexityModel,
-
-      // xai
-      xAIKey,
-      xAIModel,
-
-      // custom provider
-      selectedCustomProviderId, // 选中的自定义提供者 ID，仅当 aiProvider 为 custom 时有效
-      customProviders: oldCustomProviders,
-
-      temperature, // 0-2
-      topP, // 0-1
-      openaiMaxContextMessageCount, // 聊天消息上下文的消息数量限制。超过20表示不限制
-      maxContextMessageCount,
-    } = oldSettings
-
-    // 迁移provider相关的配置
-    const providers: Settings['providers'] = {}
-    const customProviders: Settings['customProviders'] = []
-
-    try {
-      if (openaiKey || apiHost) {
-        providers[ModelProviderEnum.OpenAI] = {
-          apiHost,
-          apiKey: openaiKey,
-          // 将openaiCustomModelOptions和openaiCustomModel迁移过来
-          models:
-            openaiCustomModel || openaiCustomModelOptions
-              ? uniqBy(
-                  [
-                    ...(defaults.SystemProviders().find((p) => p.id === ModelProviderEnum.OpenAI)?.defaultSettings
-                      ?.models || []),
-                    ...(openaiCustomModel ? [{ modelId: openaiCustomModel }] : []),
-                    ...(openaiCustomModelOptions || []).map((o: string) => ({
-                      modelId: o,
-                    })),
-                  ],
-                  'modelId'
-                )
-              : undefined,
-        }
-      }
-      log.info('migrate openai settings done')
-    } catch (e) {
-      log.info('migrate openai settings failed.')
-    }
-
-    if (claudeApiKey || claudeApiHost) {
-      providers[ModelProviderEnum.Claude] = {
-        apiKey: claudeApiKey,
-        apiHost: claudeApiHost,
-      }
-      log.info('migrate claude settings done')
-    }
-    if (geminiAPIKey || geminiAPIHost) {
-      providers[ModelProviderEnum.Gemini] = {
-        apiKey: geminiAPIKey,
-        apiHost: geminiAPIHost,
-      }
-      log.info('migrate gemini settings done')
-    }
-    if (deepseekAPIKey) {
-      providers[ModelProviderEnum.DeepSeek] = {
-        apiKey: deepseekAPIKey,
-      }
-      log.info('migrate deepseek settings done')
-    }
-    if (siliconCloudKey) {
-      providers[ModelProviderEnum.SiliconFlow] = {
-        apiKey: siliconCloudKey,
-      }
-      log.info('migrate siliconflow settings done')
-    }
-    if (azureEndpoint || azureDeploymentNameOptions || azureDalleDeploymentName || azureApikey || azureApiVersion) {
-      providers[ModelProviderEnum.Azure] = {
-        apiKey: azureApikey,
-        endpoint: azureEndpoint,
-        dalleDeploymentName: azureDalleDeploymentName,
-        apiVersion: azureApiVersion,
-        models: azureDeploymentNameOptions?.map((op: string) => ({
-          modelId: op,
-        })),
-      }
-      log.info('migrate azure settings done')
-    }
-    if (xAIKey) {
-      providers[ModelProviderEnum.XAI] = {
-        apiKey: xAIKey,
-      }
-      log.info('migrate xai settings done')
-    }
-    if (ollamaHost) {
-      providers[ModelProviderEnum.Ollama] = {
-        apiHost: ollamaHost,
-      }
-      log.info('migrate ollama settings done')
-    }
-    if (lmStudioHost) {
-      providers[ModelProviderEnum.LMStudio] = {
-        apiHost: lmStudioHost,
-      }
-      log.info('migrate lmstudio settings done')
-    }
-    if (perplexityApiKey) {
-      providers[ModelProviderEnum.Perplexity] = {
-        apiKey: perplexityApiKey,
-      }
-      log.info('migrate perplexity settings done')
-    }
-    if (groqAPIKey) {
-      providers[ModelProviderEnum.Groq] = {
-        apiKey: groqAPIKey,
-      }
-      log.info('migrate groq settings done')
-    }
-    if (chatglmApiKey) {
-      providers[ModelProviderEnum.ChatGLM6B] = {
-        apiKey: chatglmApiKey,
-      }
-      log.info('migrate chatglm settings done')
-    }
-
-    try {
-      if (oldCustomProviders) {
-        oldCustomProviders.forEach((cp: any) => {
-          const pid = 'custom-provider-' + uuidv4()
-          customProviders.push({
-            id: pid,
-            name: cp.name,
-            isCustom: true,
-            type: ModelProviderType.OpenAI,
-          })
-          providers[pid] = {
-            apiKey: cp.key,
-            apiHost: cp.host,
-            apiPath: cp.path,
-            useProxy: cp.useProxy,
-            models: uniq([...(cp.modelOptions || []), cp.model || ''])
-              .filter((op) => !!op)
-              .map((op: any) => ({
-                modelId: op,
-              })),
-          }
-          log.info(`migrate custom provider [${cp.name}] settings done`)
-        })
-      }
-    } catch (e) {
-      log.info('migrate custom provider settings failed.')
-    }
+    // 迁移provider相关的配置（纯数据变换已下沉到 shared，web/native 共用）
+    const { providers, customProviders } = migrateLegacyProviderSettings(oldSettings as LegacyFlatSettings)
 
     try {
       await dataStore.setData(StorageKey.Settings, {
@@ -639,22 +439,7 @@ async function migrate_9_to_10(dataStore: MigrateStore): Promise<boolean> {
       if (session.id) {
         const oldSessionSettings = (session.settings || {}) as any
         const sessionProvider: ModelProvider = oldSessionSettings.aiProvider ?? oldSettings.aiProvider
-        const modelKey = {
-          [ModelProviderEnum.ChatboxAI]: 'chatboxAIModel',
-          [ModelProviderEnum.OpenAI]: 'model',
-          [ModelProviderEnum.Claude]: 'claudeModel',
-          [ModelProviderEnum.Gemini]: 'geminiModel',
-          [ModelProviderEnum.Ollama]: 'ollamaModel',
-          [ModelProviderEnum.LMStudio]: 'lmStudioModel',
-          [ModelProviderEnum.DeepSeek]: 'deepseekModel',
-          [ModelProviderEnum.SiliconFlow]: 'siliconCloudModel',
-          [ModelProviderEnum.Azure]: 'azureDeploymentName',
-          [ModelProviderEnum.XAI]: 'xAIModel',
-          [ModelProviderEnum.Perplexity]: 'perplexityModel',
-          [ModelProviderEnum.Groq]: 'groqModel',
-          [ModelProviderEnum.ChatGLM6B]: 'chatglmModel',
-          [ModelProviderEnum.Custom]: 'model',
-        }[sessionProvider]
+        const modelKey = LEGACY_PROVIDER_MODEL_KEYS[sessionProvider]
         const modelId: string = oldSessionSettings[modelKey!] ?? oldSettings[modelKey!]
         session.settings =
           session.type === 'chat'

@@ -1,4 +1,4 @@
-import type { Session, TaskSession } from '@shared/types'
+import type { Session } from '@shared/types'
 import { getMessageText } from '@shared/utils/message'
 import { getLogger } from '@/lib/utils'
 import {
@@ -8,7 +8,6 @@ import {
 } from '@/packages/context-management/attachment-payload'
 import storage from '@/storage'
 import * as chatStore from '@/stores/chatStore'
-import { getTaskSession } from '@/stores/taskSessionStore'
 import { computationQueue } from './computation-queue'
 import { estimateTokens } from './tokenizer'
 import type { ComputationTask, TaskResult, TokenizerType } from './types'
@@ -225,14 +224,10 @@ function getTokenModel(tokenizerType: TokenizerType): { provider: string; modelI
   return undefined
 }
 
-type TokenEstimationSession = Pick<Session, 'messages' | 'threads'> | Pick<TaskSession, 'messages'>
+type TokenEstimationSession = Pick<Session, 'messages' | 'threads'>
 
 async function getSessionForTokenEstimation(sessionId: string): Promise<TokenEstimationSession | null> {
-  const chatSession = await chatStore.getSession(sessionId)
-  if (chatSession) {
-    return chatSession
-  }
-  return await getTaskSession(sessionId)
+  return await chatStore.getSession(sessionId)
 }
 
 export function initializeExecutor(): void {

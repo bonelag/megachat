@@ -44,6 +44,7 @@ interface DesktopModelSelectorProps {
   onOptionSubmit: (val: string) => void
   onDropdownOpen?: () => void
   modelFilter?: (model: ProviderModelInfo, providerId?: string) => boolean
+  modelDisabledCheck?: (model: ProviderModelInfo, providerId?: string) => string | undefined
   comboboxProps?: ComboboxProps
   searchPosition?: 'top' | 'bottom'
 }
@@ -110,6 +111,7 @@ export const DesktopModelSelector = forwardRef<HTMLDivElement, DesktopModelSelec
       onOptionSubmit,
       onDropdownOpen,
       modelFilter,
+      modelDisabledCheck,
       comboboxProps,
       searchPosition = 'bottom',
     },
@@ -157,6 +159,7 @@ export const DesktopModelSelector = forwardRef<HTMLDivElement, DesktopModelSelec
             model={model}
             isFavorited={isFavorited}
             isSelected={selectedProviderId === provider.id && selectedModelId === model.modelId}
+            disabledReason={modelDisabledCheck?.(model, provider.id)}
             onToggleFavorited={() => {
               if (isFavorited) {
                 unfavoriteModel(provider.id, model.modelId)
@@ -267,6 +270,7 @@ export const DesktopModelSelector = forwardRef<HTMLDivElement, DesktopModelSelec
                             isFavorited={true}
                             isSelected={selectedProviderId === fm.provider.id && selectedModelId === fm.model.modelId}
                             hideFavoriteIcon={true}
+                            disabledReason={fm.model ? modelDisabledCheck?.(fm.model, fm.provider.id) : undefined}
                             onToggleFavorited={() => {
                               if (fm.provider && fm.model) {
                                 unfavoriteModel(fm.provider.id, fm.model.modelId)
@@ -302,6 +306,7 @@ export const DesktopModelSelector = forwardRef<HTMLDivElement, DesktopModelSelec
                             isFavorited={true}
                             isSelected={selectedProviderId === fm.provider.id && selectedModelId === fm.model.modelId}
                             hideFavoriteIcon={true}
+                            disabledReason={fm.model ? modelDisabledCheck?.(fm.model, fm.provider.id) : undefined}
                             onToggleFavorited={() => {
                               if (fm.provider && fm.model) {
                                 unfavoriteModel(fm.provider.id, fm.model.modelId)

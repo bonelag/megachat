@@ -21,6 +21,8 @@ const KnowledgeBaseMenu: FC<Props> = (props) => {
 
   return (
     <Menu
+      opened={props.opened}
+      onChange={props.setOpened}
       trigger="hover"
       openDelay={100}
       closeDelay={100}

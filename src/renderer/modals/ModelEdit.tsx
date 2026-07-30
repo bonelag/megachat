@@ -7,13 +7,12 @@ import { createModelDependencies } from '@/adapters'
 import { AdaptiveSelect } from '@/components/AdaptiveSelect'
 import { AdaptiveModal } from '@/components/common/AdaptiveModal'
 import platform from '@/platform'
-import { useSettingsStore } from '@/stores/settingsStore'
+import { settingsStore } from '@/stores/settingsStore'
 import { type ModelTestState, testModelCapabilities } from '@/utils/model-tester'
 
 const ModelEdit = NiceModal.create((props: { model?: ProviderModelInfo; providerId?: string }) => {
   const modal = useModal()
   const { t } = useTranslation()
-  const settings = useSettingsStore((state) => state)
 
   const isNew = !props.model
   const [modelId, setModelId] = useState(props.model?.modelId || '')
@@ -52,7 +51,7 @@ const ModelEdit = NiceModal.create((props: { model?: ProviderModelInfo; provider
     await testModelCapabilities({
       providerId: props.providerId,
       modelId,
-      settings,
+      settings: settingsStore.getState(),
       configs,
       dependencies,
       onStateChange: (state) => {

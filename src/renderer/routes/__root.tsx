@@ -1,17 +1,3 @@
-import { type RemoteConfig, Theme } from '@shared/types'
-import { z } from 'zod'
-import { ErrorBoundary } from '@/components/common/ErrorBoundary'
-import Toasts from '@/components/common/Toasts'
-import DesktopDownloadReminder from '@/components/layout/DesktopDownloadReminder'
-import ExitFullscreenButton from '@/components/layout/ExitFullscreenButton'
-import useAppTheme from '@/hooks/useAppTheme'
-import { useSystemLanguageWhenInit } from '@/hooks/useDefaultSystemLanguage'
-import { useI18nEffect } from '@/hooks/useI18nEffect'
-import useNeedRoomForWinControls from '@/hooks/useNeedRoomForWinControls'
-import { useSidebarWidth } from '@/hooks/useScreenChange'
-import useShortcut from '@/hooks/useShortcut'
-import useVersion from '@/hooks/useVersion'
-import '@/modals'
 import NiceModal from '@ebay/nice-modal-react'
 import {
   Avatar,
@@ -42,12 +28,25 @@ import {
 import { Box, Grid } from '@mui/material'
 import CssBaseline from '@mui/material/CssBaseline'
 import { ThemeProvider } from '@mui/material/styles'
+import { type RemoteConfig, Theme } from '@shared/types'
 import { useQuery } from '@tanstack/react-query'
 import { createRootRoute, Outlet, useLocation } from '@tanstack/react-router'
-import { useAtomValue, useSetAtom } from 'jotai'
+import { useSetAtom } from 'jotai'
 import { useEffect, useMemo, useRef } from 'react'
 import { trackJkViewEvent } from '@/analytics/jk'
 import { JK_EVENTS, JK_PAGE_NAMES } from '@/analytics/jk-events'
+import { ErrorBoundary } from '@/components/common/ErrorBoundary'
+import Toasts from '@/components/common/Toasts'
+import DesktopDownloadReminder from '@/components/layout/DesktopDownloadReminder'
+import ExitFullscreenButton from '@/components/layout/ExitFullscreenButton'
+import useAppTheme from '@/hooks/useAppTheme'
+import { useSystemLanguageWhenInit } from '@/hooks/useDefaultSystemLanguage'
+import { useI18nEffect } from '@/hooks/useI18nEffect'
+import useNeedRoomForWinControls from '@/hooks/useNeedRoomForWinControls'
+import useScreenChange, { useSidebarWidth } from '@/hooks/useScreenChange'
+import useShortcut from '@/hooks/useShortcut'
+import useVersion from '@/hooks/useVersion'
+import '@/modals'
 import SettingsModal, { navigateToSettings } from '@/modals/Settings'
 import { prefetchModelRegistry } from '@/packages/model-registry'
 import { getOS } from '@/packages/navigator'
@@ -65,7 +64,6 @@ import { initOnboardingStore, onboardingStore } from '@/stores/onboardingStore'
 import * as premiumActions from '@/stores/premiumActions'
 import * as settingActions from '@/stores/settingActions'
 import { initSettingsStore, settingsStore, useLanguage, useSettingsStore, useTheme } from '@/stores/settingsStore'
-import { getTaskSession } from '@/stores/taskSessionStore'
 import { useUIStore } from '@/stores/uiStore'
 import { CHATBOX_BUILD_CHANNEL, CHATBOX_BUILD_PLATFORM } from '@/variables'
 import { blobToDataUrl } from './image-creator/-components/constants'
@@ -135,6 +133,8 @@ function BackgroundImageOverlay() {
 }
 
 function Root() {
+  useScreenChange()
+
   const { isExceeded, isExceededResolved } = useVersion()
   const location = useLocation()
   const spellCheck = useSettingsStore((state) => state.spellCheck)
@@ -160,8 +160,12 @@ function Root() {
         .catch(() => ({ setting_chatboxai_first: false }) as RemoteConfig)
       setRemoteConfig(async (prev) => ({ ...(await prev), ...remoteConfig }))
 
-      // Skip guide-related checks if already on guide or settings/mcp page
-      if (location.pathname === '/guide' || location.pathname === '/settings/mcp') {
+      // Skip guide-related checks if already on guide, dev tools, or settings/mcp page
+      if (
+        location.pathname === '/guide' ||
+        location.pathname.startsWith('/dev') ||
+        location.pathname === '/settings/mcp'
+      ) {
         initialized.current = true
         return
       }
@@ -222,9 +226,7 @@ function Root() {
       const sid = JSON.parse(localStorage.getItem('_currentSessionIdCachedAtom') || '""') as string
       if (sid && startupPage === 'session') {
         router.navigate({
-          to: '/session/$sessionId',
-          params: { sessionId: sid },
-          search: (prev) => prev,
+          to: `/session/${sid}`,
           replace: true,
         })
       }
@@ -242,23 +244,11 @@ function Root() {
           const settingsPath = path.substring('/settings'.length)
           navigateToSettings(settingsPath || '/')
         } else {
-          router.navigate({ to: path as '/', search: (prev) => prev })
+          router.navigate({ to: path })
         }
       })
     }
   }, [])
-
-  // Route → sidebar mode sync
-  const setSidebarMode = useUIStore((s) => s.setSidebarMode)
-  useEffect(() => {
-    const pathname = location.pathname
-    if (pathname === '/task' || pathname.startsWith('/task/')) {
-      setSidebarMode('task')
-    } else if (pathname === '/' || pathname.startsWith('/session/')) {
-      setSidebarMode('chat')
-    }
-    // Other routes (settings, copilots, about, etc.) don't change sidebarMode
-  }, [location.pathname, setSidebarMode])
 
   // Page view tracking
   const settingsSearch = (location.search as Record<string, unknown>)?.settings as string | undefined
@@ -271,8 +261,6 @@ function Root() {
       pageName = JK_PAGE_NAMES.SETTING_PAGE
     } else if (pathname === '/' || pathname.startsWith('/session/')) {
       pageName = JK_PAGE_NAMES.CHAT_PAGE
-    } else if (pathname === '/task' || pathname.startsWith('/task/')) {
-      pageName = JK_PAGE_NAMES.TASK_PAGE
     } else if (pathname.startsWith('/image-creator')) {
       pageName = JK_PAGE_NAMES.IMAGE_PAGE
     } else if (pathname.startsWith('/copilots')) {
@@ -294,10 +282,6 @@ function Root() {
         const sessionId = pathname.slice('/session/'.length)
         const session = await getSession(sessionId).catch(() => null)
         content = session?.name
-      } else if (pathname.startsWith('/task/') && pathname.length > '/task/'.length) {
-        const taskId = pathname.slice('/task/'.length)
-        const taskSession = await getTaskSession(taskId).catch(() => null)
-        content = taskSession?.name
       }
 
       trackJkViewEvent(JK_EVENTS.PAGE_VIEW, {
@@ -640,9 +624,6 @@ const creteMantineTheme = (scale = 1) =>
   })
 
 export const Route = createRootRoute({
-  validateSearch: z.object({
-    settings: z.string().optional(),
-  }),
   component: () => {
     useI18nEffect()
     premiumActions.useAutoValidate() // 每次启动都执行 license 检查，防止用户在lemonsqueezy管理页面中取消了当前设备的激活

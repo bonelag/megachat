@@ -1,6 +1,6 @@
 import { Badge, Button, Checkbox, Flex, Modal, Paper, Stack, Text } from '@mantine/core'
 import { IconCheck, IconX } from '@tabler/icons-react'
-import { type FC, useEffect, useMemo, useState } from 'react'
+import { type CSSProperties, type FC, useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { ScalableIcon } from '@/components/common/ScalableIcon'
 import { skillsController } from '@/packages/skills/controller'
@@ -26,6 +26,8 @@ type InstallStatus = {
   error?: string
 }
 
+const statusBadgeStyle = { flex: '0 0 auto', width: 'max-content' } satisfies CSSProperties
+
 export const GitHubInstallModal: FC<GitHubInstallModalProps> = ({
   opened,
   onClose,
@@ -47,7 +49,9 @@ export const GitHubInstallModal: FC<GitHubInstallModalProps> = ({
       return
     }
 
-    setSelectedPaths(skills.map((skill) => skill.path))
+    // A repo may contain many skills — don't pre-select all. Only auto-select
+    // when there's a single skill (no ambiguity about what to install).
+    setSelectedPaths(skills.length === 1 ? [skills[0].path] : [])
     setInstallStatuses(
       skills.reduce<Record<string, InstallStatus>>((acc, skill) => {
         acc[skill.path] = { state: 'idle' }
@@ -59,6 +63,13 @@ export const GitHubInstallModal: FC<GitHubInstallModalProps> = ({
   const selectedSkills = useMemo(() => {
     return skills.filter((skill) => selectedPaths.includes(skill.path))
   }, [selectedPaths, skills])
+
+  const allSelected = skills.length > 0 && selectedPaths.length === skills.length
+  const someSelected = selectedPaths.length > 0 && !allSelected
+
+  const toggleSelectAll = () => {
+    setSelectedPaths(allSelected ? [] : skills.map((skill) => skill.path))
+  }
 
   const handleInstallSelected = async () => {
     if (!selectedSkills.length) return
@@ -128,6 +139,24 @@ export const GitHubInstallModal: FC<GitHubInstallModalProps> = ({
       overlayProps={{ backgroundOpacity: 0.35, blur: 7 }}
     >
       <Stack gap="sm">
+        {skills.length > 1 && (
+          <Flex align="center" justify="space-between" px={4}>
+            <Checkbox
+              checked={allSelected}
+              indeterminate={someSelected}
+              onChange={toggleSelectAll}
+              disabled={installing}
+              label={
+                <Text size="xs" fw={500}>
+                  {t('Select all')}
+                </Text>
+              }
+            />
+            <Text size="xs" c="chatbox-tertiary">
+              {t('{{count}} selected', { count: selectedPaths.length })}
+            </Text>
+          </Flex>
+        )}
         {skills.map((skill) => {
           const status = installStatuses[skill.path]?.state ?? 'idle'
           const statusError = installStatuses[skill.path]?.error
@@ -136,6 +165,7 @@ export const GitHubInstallModal: FC<GitHubInstallModalProps> = ({
             <Paper key={skill.path} withBorder radius="md" p="sm">
               <Flex align="flex-start" justify="space-between" gap="sm">
                 <Checkbox
+                  style={{ flex: '1 1 0', minWidth: 0 }}
                   checked={selectedPaths.includes(skill.path)}
                   onChange={(event) => {
                     const checked = event.currentTarget.checked
@@ -156,14 +186,28 @@ export const GitHubInstallModal: FC<GitHubInstallModalProps> = ({
                     </Stack>
                   }
                 />
-                {status === 'loading' && <Badge size="xs">{t('Installing')}</Badge>}
+                {status === 'loading' && (
+                  <Badge size="xs" style={statusBadgeStyle}>
+                    {t('Installing')}
+                  </Badge>
+                )}
                 {status === 'success' && (
-                  <Badge size="xs" color="green" leftSection={<ScalableIcon icon={IconCheck} size={12} />}>
+                  <Badge
+                    size="xs"
+                    color="green"
+                    leftSection={<ScalableIcon icon={IconCheck} size={12} />}
+                    style={statusBadgeStyle}
+                  >
                     {t('Installed')}
                   </Badge>
                 )}
                 {status === 'error' && (
-                  <Badge size="xs" color="red" leftSection={<ScalableIcon icon={IconX} size={12} />}>
+                  <Badge
+                    size="xs"
+                    color="red"
+                    leftSection={<ScalableIcon icon={IconX} size={12} />}
+                    style={statusBadgeStyle}
+                  >
                     {t('Failed')}
                   </Badge>
                 )}

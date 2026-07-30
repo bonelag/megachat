@@ -1,3 +1,4 @@
+import NiceModal from '@ebay/nice-modal-react'
 import { ActionIcon, Flex, Loader, Text, Tooltip } from '@mantine/core'
 import { Link } from '@mui/material'
 import { aiProviderNameHash } from '@shared/models'
@@ -6,20 +7,29 @@ import type { Message } from '@shared/types'
 import { ModelProviderEnum } from '@shared/types/provider'
 import { IconCheck, IconChevronDown, IconChevronUp, IconCopy, IconLanguage, IconReload } from '@tabler/icons-react'
 import type React from 'react'
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Trans, useTranslation } from 'react-i18next'
+import {
+  trackAgentModeFreePointsCard,
+  trackAgentModeFreePointsCardClick,
+  trackAgentModeFreePointsClaimSuccess,
+} from '@/analytics/agent-mode'
 import { trackJkClickEvent } from '@/analytics/jk'
 import { JK_EVENTS, JK_PAGE_NAMES } from '@/analytics/jk-events'
 import { ChatboxAIErrorMessage } from '@/components/common/ChatboxAIErrorMessage'
 import { useCopied } from '@/hooks/useCopied'
 import { navigateToSettings } from '@/modals/Settings'
-import { trackingEvent } from '@/packages/event'
-import { buildChatboxUrl } from '@/packages/remote'
+import { AgentModeRewardResumeError, claimAgentModeRewardAndResume } from '@/packages/agent-mode-reward'
+import { buildChatboxUrl, claimFreeAgentModeReward } from '@/packages/remote'
 import { translateTexts } from '@/packages/translation'
 import platform from '@/platform'
 import * as settingActions from '@/stores/settingActions'
 import { useLanguage, useSettingsStore } from '@/stores/settingsStore'
+import * as toastActions from '@/stores/toastActions'
 import LinkTargetBlank from '../common/Link'
+import { AgentModeRewardQuotaCard } from './AgentModeRewardQuotaCard'
+import { resolveMessageErrorPresentation } from './message-error-presentation'
+import { QuotaExhaustedCard } from './QuotaExhaustedCard'
 
 const MAX_CHARS = 200
 const MAX_LINES = 3
@@ -142,14 +152,23 @@ function ErrorActionButtons(props: {
   )
 }
 
-export default function MessageErrTips(props: { msg: Message; onRetry?: () => void; isBubbleLayout?: boolean }) {
-  const { msg, onRetry, isBubbleLayout } = props
+export default function MessageErrTips(props: {
+  msg: Message
+  sessionId?: string
+  onRetry?: () => void | Promise<void>
+  isBubbleLayout?: boolean
+}) {
+  const { msg, sessionId, onRetry, isBubbleLayout } = props
   const { t } = useTranslation()
   const [expanded, setExpanded] = useState(false)
   const licenseKey = useSettingsStore((state) => state.licenseKey)
   const language = useLanguage()
   const [translatedText, setTranslatedText] = useState<string | null>(null)
   const [isTranslating, setIsTranslating] = useState(false)
+  const [isHandlingAgentModeReward, setIsHandlingAgentModeReward] = useState(false)
+  const [agentModeRewardClaimFailed, setAgentModeRewardClaimFailed] = useState(false)
+  const [agentModeRewardClaimed, setAgentModeRewardClaimed] = useState(false)
+  const [agentModeRewardResumeFailed, setAgentModeRewardResumeFailed] = useState(false)
 
   const errorMessage = msg.errorExtra?.responseBody
     ? (() => {
@@ -177,6 +196,25 @@ export default function MessageErrTips(props: { msg: Message; onRetry?: () => vo
   const { copied, copy } = useCopied(displayedErrorMessage)
   const isTruncated = shouldTruncate(errorMessage)
   const showTranslateButton = language !== 'en' && errorMessage.length > 0
+  const errorPresentation = resolveMessageErrorPresentation(msg)
+  const agentModeTrackingContext = useMemo(
+    () =>
+      sessionId
+        ? {
+            sessionId,
+            mode: 'work_mode' as const,
+            provider: msg.aiProvider,
+            model: msg.model,
+          }
+        : null,
+    [msg.aiProvider, msg.model, sessionId]
+  )
+
+  useEffect(() => {
+    if (errorPresentation === 'agent-mode-reward' && agentModeTrackingContext) {
+      trackAgentModeFreePointsCard(agentModeTrackingContext)
+    }
+  }, [agentModeTrackingContext, errorPresentation])
 
   const handleTranslate = useCallback(async () => {
     if (translatedText) {
@@ -194,8 +232,83 @@ export default function MessageErrTips(props: { msg: Message; onRetry?: () => vo
     }
   }, [errorMessage, language, translatedText])
 
+  const handleAgentModeRewardAction = useCallback(async () => {
+    if (isHandlingAgentModeReward || !onRetry || !licenseKey) {
+      return
+    }
+    if (!agentModeRewardClaimed && agentModeTrackingContext) {
+      trackAgentModeFreePointsCardClick(agentModeTrackingContext)
+    }
+    setIsHandlingAgentModeReward(true)
+    setAgentModeRewardClaimFailed(false)
+    setAgentModeRewardResumeFailed(false)
+
+    if (agentModeRewardClaimed) {
+      try {
+        await onRetry()
+      } catch (error) {
+        console.error('Failed to resume Agent Mode after claiming the reward:', error)
+        setAgentModeRewardResumeFailed(true)
+        toastActions.add(t('Reward claimed, but the task could not resume automatically. Please retry.'))
+      } finally {
+        setIsHandlingAgentModeReward(false)
+      }
+      return
+    }
+
+    try {
+      await claimAgentModeRewardAndResume({
+        claim: () => claimFreeAgentModeReward(licenseKey),
+        showSuccess: (reward) => {
+          setAgentModeRewardClaimed(true)
+          if (agentModeTrackingContext) {
+            trackAgentModeFreePointsClaimSuccess(agentModeTrackingContext)
+          }
+          void NiceModal.show('agent-mode-reward-claim-success', reward).catch(() => undefined)
+        },
+        resume: async () => {
+          await onRetry()
+        },
+      })
+    } catch (error) {
+      if (error instanceof AgentModeRewardResumeError) {
+        console.error('Failed to resume Agent Mode after claiming the reward:', error.resumeCause)
+        setAgentModeRewardClaimed(true)
+        setAgentModeRewardResumeFailed(true)
+        toastActions.add(t('Reward claimed, but the task could not resume automatically. Please retry.'))
+        return
+      }
+      console.error('Failed to claim Agent Mode reward:', error)
+      setAgentModeRewardClaimFailed(true)
+    } finally {
+      setIsHandlingAgentModeReward(false)
+    }
+  }, [agentModeRewardClaimed, agentModeTrackingContext, isHandlingAgentModeReward, licenseKey, onRetry, t])
+
+  const handleUpgradePlan = useCallback(() => {
+    platform.openLink(
+      buildChatboxUrl(`/redirect_app/view_more_plans/${language}?utm_source=app&utm_content=msg_quota_exhausted`)
+    )
+  }, [language])
+
   if (!msg.error) {
     return null
+  }
+
+  if (errorPresentation === 'quota-exhausted' || errorPresentation === 'free-quota-exhausted') {
+    return <QuotaExhaustedCard kind={errorPresentation} onUpgrade={handleUpgradePlan} />
+  }
+
+  if (errorPresentation === 'agent-mode-reward') {
+    return (
+      <AgentModeRewardQuotaCard
+        loading={isHandlingAgentModeReward}
+        claimFailed={agentModeRewardClaimFailed}
+        rewardClaimed={agentModeRewardClaimed}
+        resumeFailed={agentModeRewardResumeFailed}
+        onAction={handleAgentModeRewardAction}
+      />
+    )
   }
 
   const tips: React.ReactNode[] = []

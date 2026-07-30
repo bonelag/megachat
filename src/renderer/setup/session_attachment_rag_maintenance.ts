@@ -1,7 +1,7 @@
 import type { Session, SessionAttachmentRagMaintenanceResult } from '@shared/types'
 import { getLogger } from '@/lib/utils'
 import platform from '@/platform'
-import { getSession, listSessionsMeta } from '@/stores/chatStore'
+import { getSession, listSessionsMetaPage } from '@/stores/chatStore'
 import { SESSION_ATTACHMENT_RAG_LOG_PREFIX } from '../../shared/session-attachment-rag/logging'
 
 const log = getLogger('session-attachment-rag-maintenance')
@@ -47,18 +47,22 @@ async function collectMaintenanceScope() {
     }
   }
 
-  const sessionMetas = await listSessionsMeta()
-  const sessionIds = sessionMetas.map((session) => session.id)
   const messageIds = new Set<string>()
-
-  for (const sessionMeta of sessionMetas) {
-    const session = await getSession(sessionMeta.id)
-    if (!session) {
-      continue
+  const sessionIds: string[] = []
+  let cursor: number | null = 0
+  while (cursor !== null) {
+    const page = await listSessionsMetaPage(cursor)
+    for (const sessionMeta of page.items) {
+      sessionIds.push(sessionMeta.id)
+      const session = await getSession(sessionMeta.id)
+      if (!session) {
+        continue
+      }
+      for (const messageId of collectSessionMessageIds(session)) {
+        messageIds.add(messageId)
+      }
     }
-    for (const messageId of collectSessionMessageIds(session)) {
-      messageIds.add(messageId)
-    }
+    cursor = page.nextCursor
   }
 
   return {

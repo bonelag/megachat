@@ -26,27 +26,12 @@ export function migrateSession(session: Session): Session {
   }
 }
 
-export function sortSessions(sessions: SessionMeta[]): SessionMeta[] {
-  const reversed: SessionMeta[] = []
-  const pinned: SessionMeta[] = []
-  for (const sess of sessions) {
-    // Skip hidden sessions (e.g., migrated picture sessions)
-    if (sess.hidden) {
-      continue
-    }
-    if (sess.starred) {
-      pinned.push(sess)
-      continue
-    }
-    reversed.unshift(sess)
-  }
-  return pinned.concat(reversed)
-}
+// Single source shared with the native mobile shell.
+import { sortSessions } from '@shared/utils/session-sort'
 
-export function createSessionMetaRecordsFromLegacyList(
-  sessions: SessionMeta[],
-  now = Date.now()
-): SessionMetaRecord[] {
+export { sortSessions }
+
+export function createSessionMetaRecordsFromLegacyList(sessions: SessionMeta[], now = Date.now()): SessionMetaRecord[] {
   const sortedVisibleSessions = sortSessions(sessions)
   const sortOrderById = new Map(sortedVisibleSessions.map((session, i) => [session.id, now - i * 1000]))
   const hiddenSortOrderStart = now - sortedVisibleSessions.length * 1000

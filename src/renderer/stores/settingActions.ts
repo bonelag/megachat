@@ -3,6 +3,7 @@ import { ModelProviderEnum } from '@shared/types'
 import { getDefaultStore } from 'jotai'
 import platform from '@/platform'
 import * as atoms from './atoms'
+import { isChatboxAIProPlan } from './licensePlan'
 import { settingsStore } from './settingsStore'
 
 export function needEditSetting() {
@@ -66,7 +67,8 @@ export function isPaid() {
 }
 
 export function isPro() {
-  return !!getLicenseKey() && !getLicenseDetail()?.name.toLowerCase().includes('lite')
+  const settings = settingsStore.getState()
+  return !!settings.licenseKey && isChatboxAIProPlan(settings.licenseDetail, settings.licensePlanName)
 }
 
 export function getRemoteConfig() {

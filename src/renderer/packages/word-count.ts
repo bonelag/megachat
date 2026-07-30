@@ -1,4 +1,4 @@
-import * as Sentry from '@sentry/react'
+import { reportError } from '@/utils/sentry'
 import { countWord as sharedCountWord } from '../../shared/utils/word_count'
 
 /**
@@ -8,7 +8,10 @@ export function countWord(data: string): number {
   try {
     return sharedCountWord(data)
   } catch (e) {
-    Sentry.captureException(e)
+    reportError(e, {
+      domain: 'token-estimation',
+      operation: 'count_words',
+    })
     return -1
   }
 }

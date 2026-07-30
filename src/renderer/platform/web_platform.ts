@@ -5,7 +5,6 @@ import { v4 as uuidv4 } from 'uuid'
 import { parseLocale } from '@/i18n/parser'
 import { type ImageGenerationStorage, IndexedDBImageGenerationStorage } from '@/storage/ImageGenerationStorage'
 import { IndexedDBSessionMetaStorage, type SessionMetaStorage } from '@/storage/SessionMetaStorage'
-import { IndexedDBTaskSessionStorage, type TaskSessionStorage } from '@/storage/TaskSessionStorage'
 import { getBrowser, getOS } from '../packages/navigator'
 import type { Platform, PlatformType } from './interfaces'
 import type { KnowledgeBaseController } from './knowledge-base/interface'
@@ -13,7 +12,7 @@ import type { SessionAttachmentRagController } from './session-attachment-rag/in
 import { IndexedDBStorage } from './storages'
 import WebExporter from './web_exporter'
 import webLogger from './web_logger'
-import { parseTextFileLocally } from './web_platform_utils'
+import { parseFileLocallyInBrowser } from './web_platform_utils'
 
 export default class WebPlatform extends IndexedDBStorage implements Platform {
   public type: PlatformType = 'web'
@@ -21,7 +20,6 @@ export default class WebPlatform extends IndexedDBStorage implements Platform {
   public exporter = new WebExporter()
 
   private imageGenerationStorage: ImageGenerationStorage | null = null
-  private taskSessionStorage: TaskSessionStorage | null = null
   private sessionMetaStorage: SessionMetaStorage | null = null
 
   constructor() {
@@ -51,7 +49,21 @@ export default class WebPlatform extends IndexedDBStorage implements Platform {
     return () => null
   }
   public onWindowFocused(callback: () => void): () => void {
-    return () => null
+    const onFocus = () => callback()
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        callback()
+      }
+    }
+    window.addEventListener('focus', onFocus)
+    document.addEventListener('visibilitychange', onVisibilityChange)
+    return () => {
+      window.removeEventListener('focus', onFocus)
+      document.removeEventListener('visibilitychange', onVisibilityChange)
+    }
+  }
+  public async isWindowFocused(): Promise<boolean> {
+    return document.visibilityState === 'visible' && document.hasFocus()
   }
   public onUpdateDownloaded(callback: () => void): () => void {
     return () => null
@@ -154,10 +166,10 @@ export default class WebPlatform extends IndexedDBStorage implements Platform {
     return
   }
 
-  async parseFileLocally(file: File): Promise<{ key?: string; isSupported: boolean }> {
-    const result = await parseTextFileLocally(file)
+  async parseFileLocally(file: File): Promise<{ key?: string; isSupported: boolean; errorCode?: string }> {
+    const result = await parseFileLocallyInBrowser(file)
     if (!result.isSupported) {
-      return { isSupported: false }
+      return { isSupported: false, errorCode: result.errorCode }
     }
     const key = `parseFile-` + uuidv4()
     await this.setStoreBlob(key, result.text)
@@ -197,13 +209,6 @@ export default class WebPlatform extends IndexedDBStorage implements Platform {
       this.imageGenerationStorage = new IndexedDBImageGenerationStorage()
     }
     return this.imageGenerationStorage
-  }
-
-  public getTaskSessionStorage(): TaskSessionStorage {
-    if (!this.taskSessionStorage) {
-      this.taskSessionStorage = new IndexedDBTaskSessionStorage()
-    }
-    return this.taskSessionStorage
   }
 
   public getSessionMetaStorage(): SessionMetaStorage {

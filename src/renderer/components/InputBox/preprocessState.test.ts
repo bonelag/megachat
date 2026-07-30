@@ -60,9 +60,8 @@ describe('cleanupFile', () => {
     expect(next.attachments).toEqual([])
     expect(next.preprocessedFiles).toEqual([])
     expect(next.preprocessingStatus.files[originalFileKey]).toBeUndefined()
-    expect(next.preprocessingStatus.files[fileKeyAfterPathLookup]).toBeUndefined()
+    expect(fileKeyAfterPathLookup).toBe(originalFileKey)
     expect(next.preprocessingPromises.files.has(originalFileKey)).toBe(false)
-    expect(next.preprocessingPromises.files.has(fileKeyAfterPathLookup)).toBe(false)
   })
 })
 
@@ -86,7 +85,6 @@ describe('onFileProcessed', () => {
       file,
       {
         file,
-        inputFileKey: originalFileKey,
         content: 'parsed content',
         storageKey: originalFileKey,
       },
@@ -95,9 +93,8 @@ describe('onFileProcessed', () => {
     )
 
     expect(next.preprocessingStatus.files[originalFileKey]).toBe('completed')
-    expect(next.preprocessingStatus.files[fileKeyAfterPathLookup]).toBeUndefined()
+    expect(fileKeyAfterPathLookup).toBe(originalFileKey)
     expect(next.preprocessingPromises.files.has(originalFileKey)).toBe(false)
-    expect(next.preprocessingPromises.files.has(fileKeyAfterPathLookup)).toBe(false)
-    expect(next.preprocessedFiles.at(-1)?.inputFileKey).toBe(originalFileKey)
+    expect(next.preprocessedFiles.at(-1)?.storageKey).toBe(originalFileKey)
   })
 })

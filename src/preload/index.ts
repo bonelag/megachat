@@ -48,6 +48,7 @@ const electronHandler: ElectronIPC = {
     ipcRenderer.on('navigate-to', listener)
     return () => ipcRenderer.off('navigate-to', listener)
   },
+  onSkillsBuiltinUpdated: createListener('skills:builtin-updated'),
 
   // Auto-updater events
   onUpdaterChecking: createListener('updater:checking'),

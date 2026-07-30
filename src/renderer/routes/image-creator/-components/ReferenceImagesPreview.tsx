@@ -2,7 +2,7 @@ import { ActionIcon, Flex, Image, Skeleton, Tooltip, UnstyledButton } from '@man
 import { IconPlus, IconX } from '@tabler/icons-react'
 import { useTranslation } from 'react-i18next'
 import { useBlob } from '@/hooks/useBlob'
-import { blobToDataUrl, MAX_REFERENCE_IMAGES } from './constants'
+import { blobToDataUrl, isDirectImageSource, MAX_REFERENCE_IMAGES } from './constants'
 
 export interface ReferenceImagesPreviewProps {
   images: { storageKey: string }[]
@@ -41,9 +41,9 @@ export function ReferenceImagesPreview({ images, onRemove, onAddClick }: Referen
 }
 
 function ReferenceImageItem({ storageKey, onRemove }: { storageKey: string; onRemove: (key: string) => void }) {
-  const isUrl = storageKey.startsWith('http://') || storageKey.startsWith('https://')
-  const { data: blob } = useBlob(isUrl ? undefined : storageKey)
-  const url = isUrl ? storageKey : blob ? blobToDataUrl(blob) : null
+  const isDirectSource = isDirectImageSource(storageKey)
+  const { data: blob } = useBlob(isDirectSource ? undefined : storageKey)
+  const url = isDirectSource ? storageKey : blob ? blobToDataUrl(blob) : null
 
   return (
     <div className="relative group">

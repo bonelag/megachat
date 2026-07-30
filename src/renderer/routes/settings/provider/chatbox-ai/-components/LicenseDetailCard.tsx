@@ -5,10 +5,10 @@ import clsx from 'clsx'
 import { type ReactNode, useCallback, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { ScalableIcon } from '@/components/common/ScalableIcon'
+import { useIsSmallScreen } from '@/hooks/useScreenChange'
 import { openLinkWithAuth } from '@/packages/openLinkWithAuth'
 import { buildChatboxUrl } from '@/packages/remote'
 import { formatNumber } from '@/utils/format'
-import { useIsSmallScreen } from '@/hooks/useScreenChange'
 
 interface LicenseDetailCardProps {
   licenseDetail: ChatboxAILicenseDetail
@@ -119,8 +119,9 @@ function QuotaCardDes({
   mutedValue,
   accent = 'default',
 }: Omit<QuotaCardProps, 'icon'>) {
-  const { t } = useTranslation()
+  const { t, i18n } = useTranslation()
   const isSmallScreen = useIsSmallScreen()
+  const isCN = i18n.language.toLowerCase().startsWith('zh')
 
   return (
     <Stack gap={4}>
@@ -131,10 +132,10 @@ function QuotaCardDes({
       {typeof remaining === 'number' && typeof total === 'number' ? (
         <Flex align="center" gap={6} wrap="nowrap">
           <Text fw={700} fz="1.3rem" lh={1.05} c={accent === 'blue' ? 'chatbox-brand' : 'chatbox-primary'}>
-            {formatNumber(remaining, 2)}
+            {formatNumber(remaining, remaining === 0 ? 0 : 2, isCN)}
           </Text>
           <Text c="dimmed" fz="1.1rem" pb={3}>
-            /{formatNumber(total, 2)}
+            /{formatNumber(total, 2, isCN)}
           </Text>
         </Flex>
       ) : (
@@ -221,28 +222,19 @@ function InfoPanel({ title, value, valueColor }: InfoPanelProps) {
 export function LicenseDetailCard({ licenseDetail, language, utmContent }: LicenseDetailCardProps) {
   const { t, i18n } = useTranslation()
   const isSmallScreen = useIsSmallScreen()
+  const isCN = i18n.language.toLowerCase().startsWith('zh')
   const [pendingAction, setPendingAction] = useState<string | null>(null)
   const pendingActionRef = useRef(false)
 
   const planDetail = licenseDetail.unified_token_usage_details?.find((detail) => detail.type === 'plan')
-  const trialDetail = licenseDetail.unified_token_usage_details?.find((detail) => detail.type === 'trial')
-  const invitationDetail = licenseDetail.unified_token_usage_details?.find(
-    (detail) => detail.type === 'invitation_reward'
-  )
   const rewardDetail = licenseDetail.aggregated_reward_details
-  const quotaDetail = planDetail?.token_limit ? planDetail : trialDetail
-  const isTrialOnly = (planDetail?.token_limit || 0) === 0 && (trialDetail?.token_limit || 0) > 0
   const isExpired = licenseDetail.token_expire_time ? new Date(licenseDetail.token_expire_time) < new Date() : false
 
-  const imageTotal = isTrialOnly ? licenseDetail.image_total_quota : licenseDetail.plan_image_limit
   const imageRemaining = Math.max(licenseDetail.image_total_quota - licenseDetail.image_used_count, 0)
   const expansionRemaining = Math.max(
     (licenseDetail.expansion_pack_limit || 0) - (licenseDetail.expansion_pack_usage || 0),
     0
   )
-  const invitationRemaining = invitationDetail
-    ? Math.max((invitationDetail.token_limit || 0) - (invitationDetail.token_usage || 0), 0)
-    : 0
 
   const rewardRemaining = rewardDetail
     ? Math.max((rewardDetail.token_limit || 0) - (rewardDetail.token_usage || 0), 0)
@@ -303,11 +295,11 @@ export function LicenseDetailCard({ licenseDetail, language, utmContent }: Licen
       </Text>
 
       <div className={clsx('grid gap-md md:grid-cols-3')}>
-        {quotaDetail && quotaDetail.token_limit > 0 && (
+        {planDetail && planDetail.token_limit > 0 && (
           <QuotaCard
-            title={licenseDetail.name + t('Quota') + '\n' + t('(Remaining/Total)')}
-            remaining={Math.max(quotaDetail.token_limit - quotaDetail.token_usage, 0)}
-            total={quotaDetail.token_limit}
+            title={`${licenseDetail.name}${t('Quota')}\n${t('(Remaining/Total)')}`}
+            remaining={Math.max(planDetail.token_limit - planDetail.token_usage, 0)}
+            total={planDetail.token_limit}
             helper={refreshText}
             actionLabel={t('View Details') as string}
             actionLoading={pendingAction === 'view-plan-details'}
@@ -322,15 +314,15 @@ export function LicenseDetailCard({ licenseDetail, language, utmContent }: Licen
             accent="blue"
             icon={
               <QuotaRingIcon
-                remaining={Math.max(quotaDetail.token_limit - quotaDetail.token_usage, 0)}
-                total={quotaDetail.token_limit}
+                remaining={Math.max(planDetail.token_limit - planDetail.token_usage, 0)}
+                total={planDetail.token_limit}
               />
             }
           />
         )}
 
         <QuotaCard
-          title={t('Expansion Pack Quota') + '\n' + t('(Remaining/Total)')}
+          title={`${t('Expansion Pack Quota')}\n${t('(Remaining/Total)')}`}
           remaining={licenseDetail.expansion_pack_limit > 0 ? expansionRemaining : undefined}
           total={licenseDetail.expansion_pack_limit > 0 ? licenseDetail.expansion_pack_limit : undefined}
           mutedValue={licenseDetail.expansion_pack_limit > 0 ? undefined : (t('No Expansion Pack') as string)}
@@ -350,7 +342,7 @@ export function LicenseDetailCard({ licenseDetail, language, utmContent }: Licen
         />
 
         <QuotaCard
-          title={t('Reward Quota') + '\n' + t('(Remaining/Total)')}
+          title={`${t('Reward Quota')}\n${t('(Remaining/Total)')}`}
           remaining={rewardDetail && rewardDetail.token_limit > 0 ? rewardRemaining : undefined}
           total={rewardDetail && rewardDetail.token_limit > 0 ? rewardDetail.token_limit : undefined}
           mutedValue={rewardDetail && rewardDetail.token_limit > 0 ? undefined : (t('No rewards yet') as string)}
@@ -372,11 +364,11 @@ export function LicenseDetailCard({ licenseDetail, language, utmContent }: Licen
       </Text>
 
       <SimpleGrid cols={isSmallScreen ? 2 : { base: 1, sm: 2 }} spacing="md">
+        <InfoPanel title={t('License Plan Overview')} value={licenseDetail.name} />
         <InfoPanel
-          title={t('License Plan Overview')}
-          value={`${licenseDetail.name}${isTrialOnly ? ` ${t('(Trial)')}` : ''}`}
+          title={t('Image Quota (Remaining/Total)')}
+          value={`${formatNumber(imageRemaining, 0, isCN)}/${formatNumber(licenseDetail.plan_image_limit || 0, 0, isCN)}`}
         />
-        <InfoPanel title={t('Image Quota (Remaining/Total)')} value={`${imageRemaining}/${imageTotal || 0}`} />
       </SimpleGrid>
 
       <InfoPanel title={t('License Expiry')} value={expiryText} valueColor={isExpired ? 'red' : undefined} />

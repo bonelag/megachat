@@ -1,7 +1,7 @@
-import { tool } from 'ai'
-import z from 'zod'
+import { jsonSchema, type ToolSet } from 'ai'
 import { MAX_INLINE_FILE_LINES, PREVIEW_LINES } from '@/packages/context-management/attachment-payload'
 import platform from '@/platform'
+import { asRecord, contentOrErrorText, numberField, stringField, toTextModelOutput } from './model-output'
 
 const DEFAULT_LINES = 200
 const MAX_LINES = MAX_INLINE_FILE_LINES
@@ -25,6 +25,40 @@ const formatLineWithNumber = (line: string, lineNumber: number) => {
 }
 
 const GREP_MAX_RESULTS = 100
+
+function formatUploadedFileReadOutput(output: unknown): string {
+  const content = contentOrErrorText(output)
+  const record = asRecord(output)
+  const linesRead = numberField(record, 'linesRead')
+  const totalLines = numberField(record, 'totalLines')
+  const lineOffset = numberField(record, 'lineOffset')
+  if (linesRead === undefined || totalLines === undefined || lineOffset === undefined) return content
+  const nextOffset = lineOffset + linesRead
+  return nextOffset < totalLines
+    ? `${content}\n\n[${totalLines - nextOffset} more lines. Use lineOffset=${nextOffset} to continue.]`
+    : content
+}
+
+function formatUploadedFileSearchOutput(output: unknown): string {
+  if (typeof output === 'string') return output
+  const record = asRecord(output)
+  const query = stringField(record, 'query')
+  const results = record?.results
+  if (!Array.isArray(results)) return contentOrErrorText(output)
+  if (results.length === 0) return query ? `No matches found for "${query}".` : 'No matches found.'
+  return results
+    .map((item) => {
+      const result = asRecord(item)
+      const lineNumber = numberField(result, 'lineNumber')
+      const lineContent = stringField(result, 'lineContent') ?? ''
+      const context = result?.context
+      if (Array.isArray(context) && context.every((line) => typeof line === 'string')) {
+        return `Line ${lineNumber ?? '?'}:\n${context.join('\n')}`
+      }
+      return `Line ${lineNumber ?? '?'}: ${lineContent}`
+    })
+    .join('\n\n')
+}
 
 async function readFileContentFromKey(fileKey: string): Promise<string | null> {
   if (fileKey.startsWith('local:')) {
@@ -60,98 +94,109 @@ Searches for text patterns within a file.
 - Call in parallel when searching multiple files
 `
 
-const readFileTool = tool({
+const readFileTool: ToolSet[string] = {
   description: 'Reads the content of a file uploaded by the user.',
-  inputSchema: z.object({
-    fileKey: z.string().describe('The identifier of the file to read within tag `<FILE_KEY>`.'),
-    lineOffset: z
-      .number()
-      .int()
-      .min(0)
-      .optional()
-      .describe('Optional line offset to start reading from. Defaults to 0.'),
-    maxLines: z
-      .number()
-      .int()
-      .min(1)
-      .max(MAX_LINES)
-      .default(DEFAULT_LINES)
-      .optional()
-      .describe(`Optional maximum number of lines to read. Defaults to ${DEFAULT_LINES}.`),
+  inputSchema: jsonSchema({
+    type: 'object',
+    properties: {
+      fileKey: {
+        type: 'string',
+        description: 'The identifier of the file to read within tag `<FILE_KEY>`.',
+      },
+      lineOffset: {
+        type: 'integer',
+        minimum: 0,
+        description: 'Optional line offset to start reading from. Defaults to 0.',
+      },
+      maxLines: {
+        type: 'integer',
+        minimum: 1,
+        maximum: MAX_LINES,
+        default: DEFAULT_LINES,
+        description: `Optional maximum number of lines to read. Defaults to ${DEFAULT_LINES}.`,
+      },
+    },
+    required: ['fileKey'],
+    additionalProperties: false,
   }),
-  execute: async (
-    input: { fileKey: string; lineOffset?: number; maxLines?: number },
-    _context: { abortSignal?: AbortSignal }
-  ) => {
-    const fileContent = await readFileContentFromKey(input.fileKey)
+  execute: async (input) => {
+    const readInput = input as { fileKey: string; lineOffset?: number; maxLines?: number }
+    const fileContent = await readFileContentFromKey(readInput.fileKey)
     if (fileContent === null) {
       return 'File not found or inaccessible. Ensure the fileKey is the correct identifier within <FILE_KEY> tags.'
     }
     const lines = fileContent.split('\n')
-    const lineOffset = input.lineOffset ?? 0
-    const maxLines = input.maxLines ?? DEFAULT_LINES
+    const lineOffset = Math.max(0, Math.floor(readInput.lineOffset ?? 0))
+    const maxLines = Math.max(1, Math.min(Math.floor(readInput.maxLines ?? DEFAULT_LINES), MAX_LINES))
     const selectedLines = lines.slice(lineOffset, lineOffset + maxLines)
     const truncatedLines = selectedLines.map(truncateLine)
     const numberedLines = truncatedLines.map((line, index) => formatLineWithNumber(line, lineOffset + index + 1))
     return {
-      fileKey: input.fileKey,
+      fileKey: readInput.fileKey,
       content: numberedLines.join('\n'),
       lineOffset,
       linesRead: selectedLines.length,
       totalLines: lines.length,
     }
   },
-})
+  toModelOutput: toTextModelOutput(formatUploadedFileReadOutput, { emptyFallback: 'File is empty.' }),
+}
 
-const searchFileTool = tool({
+const searchFileTool: ToolSet[string] = {
   description: 'Searches for a keyword or phrase within a file uploaded by the user.',
-  inputSchema: z.object({
-    fileKey: z.string().describe('The identifier of the file to read within tag `<FILE_KEY>`.'),
-    query: z.string().describe('The keyword or phrase to search for within the file.'),
-    beforeContextLines: z
-      .number()
-      .int()
-      .min(0)
-      .optional()
-      .describe('Optional number of context lines to include before each match. Defaults to 0.'),
-    afterContextLines: z
-      .number()
-      .int()
-      .min(0)
-      .optional()
-      .describe('Optional number of context lines to include after each match. Defaults to 0.'),
-    maxResults: z
-      .number()
-      .int()
-      .min(1)
-      .max(GREP_MAX_RESULTS)
-      .default(10)
-      .optional()
-      .describe('Optional maximum number of results to return. Defaults to 10.'),
+  inputSchema: jsonSchema({
+    type: 'object',
+    properties: {
+      fileKey: {
+        type: 'string',
+        description: 'The identifier of the file to read within tag `<FILE_KEY>`.',
+      },
+      query: {
+        type: 'string',
+        description: 'The keyword or phrase to search for within the file.',
+      },
+      beforeContextLines: {
+        type: 'integer',
+        minimum: 0,
+        description: 'Optional number of context lines to include before each match. Defaults to 0.',
+      },
+      afterContextLines: {
+        type: 'integer',
+        minimum: 0,
+        description: 'Optional number of context lines to include after each match. Defaults to 0.',
+      },
+      maxResults: {
+        type: 'integer',
+        minimum: 1,
+        maximum: GREP_MAX_RESULTS,
+        default: 10,
+        description: 'Optional maximum number of results to return. Defaults to 10.',
+      },
+    },
+    required: ['fileKey', 'query'],
+    additionalProperties: false,
   }),
-  execute: async (
-    input: {
+  execute: async (input) => {
+    const searchInput = input as {
       fileKey: string
       query: string
       beforeContextLines?: number
       afterContextLines?: number
       maxResults?: number
-    },
-    _context: { abortSignal?: AbortSignal }
-  ) => {
-    const fileContent = await readFileContentFromKey(input.fileKey)
+    }
+    const fileContent = await readFileContentFromKey(searchInput.fileKey)
     if (fileContent === null) {
       return 'File not found or inaccessible. Ensure the fileKey is the correct identifier within <FILE_KEY> tags.'
     }
     const lines = fileContent.split('\n')
     const results: Array<{ lineNumber: number; lineContent: string; context: string[] }> = []
 
-    const beforeLines = input.beforeContextLines ?? 0
-    const afterLines = input.afterContextLines ?? 0
-    const maxResults = input.maxResults ?? 10
+    const beforeLines = searchInput.beforeContextLines ?? 0
+    const afterLines = searchInput.afterContextLines ?? 0
+    const maxResults = searchInput.maxResults ?? 10
 
     for (let i = 0; i < lines.length; i++) {
-      if (lines[i].includes(input.query)) {
+      if (lines[i].includes(searchInput.query)) {
         const contextStart = Math.max(0, i - beforeLines)
         const contextEnd = Math.min(lines.length, i + afterLines + 1)
         const context = lines.slice(contextStart, contextEnd).map(truncateLine)
@@ -163,13 +208,14 @@ const searchFileTool = tool({
     }
 
     return {
-      fileKey: input.fileKey,
-      query: input.query,
+      fileKey: searchInput.fileKey,
+      query: searchInput.query,
       results,
       totalMatches: results.length,
     }
   },
-})
+  toModelOutput: toTextModelOutput(formatUploadedFileSearchOutput),
+}
 
 export default {
   description: toolSetDescription,

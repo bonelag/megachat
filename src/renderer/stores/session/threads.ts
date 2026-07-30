@@ -31,7 +31,7 @@ export async function editThread(sessionId: string, threadId: string, newThread:
     return { ...t, ...newThread }
   })
 
-  await chatStore.updateSession(sessionId, { threads })
+  await chatStore.updateSessionWithMessages(sessionId, { threads })
 }
 
 /**
@@ -48,7 +48,7 @@ export async function removeThread(sessionId: string, threadId: string) {
     await removeCurrentThread(sessionId)
     return
   }
-  return await chatStore.updateSession(sessionId, {
+  return await chatStore.updateSessionWithMessages(sessionId, {
     threads: session.threads?.filter((t) => t.id !== threadId),
   })
 }
@@ -149,7 +149,7 @@ export async function removeCurrentThread(sessionId: string) {
     updatedSession.threads = session.threads.slice(0, session.threads.length - 1)
     updatedSession.threadName = lastThread.name
   }
-  await chatStore.updateSession(session.id, updatedSession)
+  await chatStore.updateSessionWithMessages(session.id, updatedSession)
 }
 
 /**

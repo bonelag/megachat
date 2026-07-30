@@ -2,13 +2,15 @@ import {
   copyMessageForksWithMapping,
   copyMessagesWithMapping,
   copyThreadsWithMapping,
+  createMessage,
   type Session,
   type SessionMeta,
 } from '@shared/types'
+import { areSessionsInSamePinGroup } from '@shared/utils/session-sort'
 import { getDefaultStore } from 'jotai'
 import { omit } from 'lodash'
-import { router } from '@/router'
 import platform from '@/platform'
+import { router } from '@/router'
 import { sortSessionRecords } from '@/storage/SessionMetaStorage'
 import * as atoms from '../atoms'
 import * as chatStore from '../chatStore'
@@ -53,6 +55,9 @@ async function copySession(
     threadName?: Session['threadName']
     messageForksHash?: Session['messageForksHash']
     compactionPoints?: Session['compactionPoints']
+  },
+  options?: {
+    appendForkMarker?: boolean
   }
 ) {
   const source = await chatStore.getSession(sourceMeta.id)
@@ -60,10 +65,13 @@ async function copySession(
     throw new Error(`Session ${sourceMeta.id} not found`)
   }
 
+  const sourceMessages = sourceMeta.messages ?? source.messages
+  const messagesToCopy = options?.appendForkMarker
+    ? sourceMessages.filter((message) => !message.isForkMarker)
+    : sourceMessages
+
   // Copy messages and get ID mapping
-  const { messages: newMessages, idMapping } = sourceMeta.messages
-    ? copyMessagesWithMapping(sourceMeta.messages)
-    : copyMessagesWithMapping(source.messages)
+  const { messages: newMessages, idMapping } = copyMessagesWithMapping(messagesToCopy)
 
   // Use sourceMeta.compactionPoints if explicitly provided (e.g., from thread),
   // otherwise fall back to source session's compactionPoints
@@ -93,10 +101,19 @@ async function copySession(
     'messageForksHash' in sourceMeta ? sourceMeta.messageForksHash : source.messageForksHash
   const newMessageForksHash = copyMessageForksWithMapping(sourceMessageForksHash, combinedIdMapping)
 
+  const copiedMessages = [...newMessages]
+  if (options?.appendForkMarker) {
+    copiedMessages.push({
+      ...createMessage('assistant'),
+      isForkMarker: true,
+      forkedFromSessionId: source.id,
+    })
+  }
+
   const newSession = {
     ...omit(source, 'id', 'messages', 'threads', 'messageForksHash', 'compactionPoints'),
     ...(sourceMeta.name ? { name: sourceMeta.name } : {}),
-    messages: newMessages,
+    messages: copiedMessages,
     threads: newThreads,
     messageForksHash: newMessageForksHash,
     compactionPoints: newCompactionPoints?.length ? newCompactionPoints : undefined,
@@ -109,7 +126,7 @@ async function copySession(
  * Copy session and switch to it
  */
 export async function copyAndSwitchSession(source: SessionMeta) {
-  const newSession = await copySession(source)
+  const newSession = await copySession(source, { appendForkMarker: true })
   switchCurrentSession(newSession.id)
 }
 
@@ -141,7 +158,7 @@ export async function reorderSessions(oldIndex: number, newIndex: number) {
   const targetSession = reorderedSessions[newIndex]
   const nextStarred = targetSession?.starred ?? movedSession.starred
 
-  const comparableReordered = reorderedSessions.filter((s) => s.starred === nextStarred)
+  const comparableReordered = reorderedSessions.filter((s) => areSessionsInSamePinGroup(s, movedSession))
   const targetGroupIndex = comparableReordered.findIndex((s) => s.id === movedSession.id)
   const before = comparableReordered[targetGroupIndex - 1]
   const after = comparableReordered[targetGroupIndex + 1]
@@ -212,28 +229,28 @@ export async function switchToNext(reversed?: boolean) {
 }
 
 /**
- * Clear session list, keeping only specified number of sessions
+ * Archive session list entries, keeping only specified number of sessions
  */
-async function clearSessionList(keepNum: number) {
+async function archiveSessionList(keepNum: number) {
   const sessionMetaList = await chatStore.listAllSessionsMeta()
-  const deleted = sessionMetaList?.slice(keepNum)
-  if (!deleted?.length) {
+  const archived = sessionMetaList?.slice(keepNum)
+  if (!archived?.length) {
     return
   }
-  await chatStore.deleteSessions(deleted.map((s) => s.id))
-  // Navigate to home if the current session was deleted
+  await chatStore.archiveSessions(archived.map((s) => s.id))
+  // Navigate to home if the current session was archived
   const store = getDefaultStore()
   const currentSessionId = store.get(atoms.currentSessionIdAtom)
-  if (currentSessionId && deleted.some((d) => d.id === currentSessionId)) {
+  if (currentSessionId && archived.some((d) => d.id === currentSessionId)) {
     router.navigate({ to: '/', replace: true })
   }
 }
 
 /**
- * Clear conversation list, keeping only specified number of sessions (from top)
+ * Clear conversation list by archiving entries, keeping only specified number of sessions (from top)
  */
 export async function clearConversationList(keepNum: number) {
-  await clearSessionList(keepNum)
+  await archiveSessionList(keepNum)
 }
 
 /**

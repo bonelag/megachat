@@ -4,10 +4,41 @@ import { KNOWLEDGE_BASE_MAX_FILE_SIZE } from '../../shared/knowledge-base'
 import { sentry } from '../adapters/sentry'
 import { getLogger } from '../util'
 import { getDatabase, getVectorStore, parseSQLiteTimestamp, withTransaction } from './db'
+import { isExpectedKnowledgeBaseFileStateError } from './error-reporting'
 import { readChunks, searchKnowledgeBase } from './file-loaders'
 import { MineruParser, testMineruConnection } from './parsers'
 
 const log = getLogger('knowledge-base:ipc-handlers')
+
+interface VectorStoreWithTurso {
+  turso: {
+    execute(params: { sql: string; args: unknown[] }): Promise<{
+      rows: Array<Record<string, unknown>>
+      rowsAffected?: number
+    }>
+  }
+}
+
+function reportKnowledgeBaseFileActionError(
+  error: unknown,
+  context: { logMessage: string; operation: string; fileId: number; extras?: Record<string, string | number | boolean> }
+) {
+  if (isExpectedKnowledgeBaseFileStateError(error)) {
+    log.warn(context.logMessage, error)
+    return
+  }
+
+  log.error(context.logMessage, error)
+  sentry.withScope((scope) => {
+    scope.setTag('component', 'knowledge-base-ipc')
+    scope.setTag('operation', context.operation)
+    scope.setExtra('fileId', context.fileId)
+    for (const [key, value] of Object.entries(context.extras ?? {})) {
+      scope.setExtra(key, value)
+    }
+    sentry.captureException(error)
+  })
+}
 
 // Store active MinerU parsing tasks for cancellation support
 // Key: filePath, Value: AbortController
@@ -529,13 +560,11 @@ export function registerKnowledgeBaseHandlers() {
       )
       return { success: true }
     } catch (error: unknown) {
-      log.error(`ipcMain: kb:file:retry failed for fileId=${fileId}`, error)
-      sentry.withScope((scope) => {
-        scope.setTag('component', 'knowledge-base-ipc')
-        scope.setTag('operation', 'file_retry')
-        scope.setExtra('fileId', fileId)
-        scope.setExtra('useRemoteParsing', useRemoteParsing)
-        sentry.captureException(error)
+      reportKnowledgeBaseFileActionError(error, {
+        logMessage: `ipcMain: kb:file:retry failed for fileId=${fileId}`,
+        operation: 'file_retry',
+        fileId,
+        extras: { useRemoteParsing },
       })
       throw error
     }
@@ -573,12 +602,10 @@ export function registerKnowledgeBaseHandlers() {
       log.info(`[IPC] File paused: ${file.filename} (id=${fileId})`)
       return { success: true }
     } catch (error: unknown) {
-      log.error(`ipcMain: kb:file:pause failed for fileId=${fileId}`, error)
-      sentry.withScope((scope) => {
-        scope.setTag('component', 'knowledge-base-ipc')
-        scope.setTag('operation', 'file_pause')
-        scope.setExtra('fileId', fileId)
-        sentry.captureException(error)
+      reportKnowledgeBaseFileActionError(error, {
+        logMessage: `ipcMain: kb:file:pause failed for fileId=${fileId}`,
+        operation: 'file_pause',
+        fileId,
       })
       throw error
     }
@@ -616,12 +643,10 @@ export function registerKnowledgeBaseHandlers() {
       log.info(`[IPC] File resume request created: ${file.filename} (id=${fileId})`)
       return { success: true }
     } catch (error: unknown) {
-      log.error(`ipcMain: kb:file:resume failed for fileId=${fileId}`, error)
-      sentry.withScope((scope) => {
-        scope.setTag('component', 'knowledge-base-ipc')
-        scope.setTag('operation', 'file_resume')
-        scope.setExtra('fileId', fileId)
-        sentry.captureException(error)
+      reportKnowledgeBaseFileActionError(error, {
+        logMessage: `ipcMain: kb:file:resume failed for fileId=${fileId}`,
+        operation: 'file_resume',
+        fileId,
       })
       throw error
     }
@@ -636,73 +661,77 @@ export function registerKnowledgeBaseHandlers() {
         throw new Error('Invalid file ID')
       }
 
-      return withTransaction(async () => {
-        const db = getDatabase()
-        const vectorStore = getVectorStore()
+      return await withTransaction(
+        async () => {
+          const db = getDatabase()
+          const vectorStore = getVectorStore()
 
-        // Find file information
-        const rs = await db.execute({
-          sql: 'SELECT * FROM kb_file WHERE id = ?',
-          args: [fileId],
-        })
-        const file = rs.rows[0]
-        if (!file) {
-          throw new Error('File not found')
-        }
-
-        const indexName = `kb_${file.kb_id}`
-
-        // Delete embedding data - use vectorStore.turso for direct operation
-        log.info(`[IPC] Deleting vectors: fileId=${fileId}, indexName=${indexName}`)
-
-        try {
-          // First query the number of vectors to delete
-          const countResult = await (vectorStore as any).turso.execute({
-            sql: `SELECT COUNT(*) as count FROM ${indexName} WHERE json_extract(metadata, '$.fileId') = ?`,
+          // Find file information
+          const rs = await db.execute({
+            sql: 'SELECT * FROM kb_file WHERE id = ?',
             args: [fileId],
           })
-          const vectorCount = Number(countResult.rows[0]?.count || 0)
-          log.info(`[IPC] Found ${vectorCount} vectors to delete`)
+          const file = rs.rows[0]
+          if (!file) {
+            throw new Error('File not found')
+          }
 
-          if (vectorCount > 0) {
-            // Delete vector data
-            const deleteResult = await (vectorStore as any).turso.execute({
-              sql: `DELETE FROM ${indexName} WHERE json_extract(metadata, '$.fileId') = ?`,
+          const indexName = `kb_${file.kb_id}`
+
+          // Delete embedding data - use vectorStore.turso for direct operation
+          log.info(`[IPC] Deleting vectors: fileId=${fileId}, indexName=${indexName}`)
+          const vectorDb = (vectorStore as unknown as VectorStoreWithTurso).turso
+
+          try {
+            // First query the number of vectors to delete
+            const countResult = await vectorDb.execute({
+              sql: `SELECT COUNT(*) as count FROM ${indexName} WHERE json_extract(metadata, '$.fileId') = ?`,
               args: [fileId],
             })
-            const rowsDeleted = Number(deleteResult.rowsAffected || 0)
-            log.info(`[IPC] Deleted ${rowsDeleted} vectors`)
-          } else {
-            log.info(`[IPC] No vectors to delete`)
+            const vectorCount = Number(countResult.rows[0]?.count || 0)
+            log.info(`[IPC] Found ${vectorCount} vectors to delete`)
+
+            if (vectorCount > 0) {
+              // Delete vector data
+              const deleteResult = await vectorDb.execute({
+                sql: `DELETE FROM ${indexName} WHERE json_extract(metadata, '$.fileId') = ?`,
+                args: [fileId],
+              })
+              const rowsDeleted = Number(deleteResult.rowsAffected || 0)
+              log.info(`[IPC] Deleted ${rowsDeleted} vectors`)
+            } else {
+              log.info(`[IPC] No vectors to delete`)
+            }
+          } catch (vectorDeleteErr: unknown) {
+            log.error(`[IPC] Failed to delete vectors: fileId=${fileId}`, vectorDeleteErr)
+            // Continue with file record deletion even if vector deletion fails
+            sentry.withScope((scope) => {
+              scope.setTag('component', 'knowledge-base-ipc')
+              scope.setTag('operation', 'file_delete_vectors')
+              scope.setExtra('fileId', fileId)
+              scope.setExtra('indexName', indexName)
+              sentry.captureException(vectorDeleteErr)
+            })
           }
-        } catch (vectorDeleteErr: unknown) {
-          log.error(`[IPC] Failed to delete vectors: fileId=${fileId}`, vectorDeleteErr)
-          // Continue with file record deletion even if vector deletion fails
-          sentry.withScope((scope) => {
-            scope.setTag('component', 'knowledge-base-ipc')
-            scope.setTag('operation', 'file_delete_vectors')
-            scope.setExtra('fileId', fileId)
-            scope.setExtra('indexName', indexName)
-            sentry.captureException(vectorDeleteErr)
+
+          // Delete file record
+          const res = await db.execute({
+            sql: 'DELETE FROM kb_file WHERE id = ?',
+            args: [fileId],
           })
+          log.info(`[IPC] Deleted file record: fileId=${fileId}, affected rows=${res.rowsAffected ?? 'unknown'}`)
+
+          return { success: true }
+        },
+        {
+          shouldReportError: (error) => !isExpectedKnowledgeBaseFileStateError(error),
         }
-
-        // Delete file record
-        const res = await db.execute({
-          sql: 'DELETE FROM kb_file WHERE id = ?',
-          args: [fileId],
-        })
-        log.info(`[IPC] Deleted file record: fileId=${fileId}, affected rows=${res.rowsAffected ?? 'unknown'}`)
-
-        return { success: true }
-      })
+      )
     } catch (error: unknown) {
-      log.error(`ipcMain: kb:file:delete failed for fileId=${fileId}`, error)
-      sentry.withScope((scope) => {
-        scope.setTag('component', 'knowledge-base-ipc')
-        scope.setTag('operation', 'file_delete')
-        scope.setExtra('fileId', fileId)
-        sentry.captureException(error)
+      reportKnowledgeBaseFileActionError(error, {
+        logMessage: `ipcMain: kb:file:delete failed for fileId=${fileId}`,
+        operation: 'file_delete',
+        fileId,
       })
       return { success: false, error: error instanceof Error ? error.message : String(error) }
     }

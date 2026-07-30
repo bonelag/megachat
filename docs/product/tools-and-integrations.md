@@ -67,9 +67,32 @@ Agent Skills 是基于 agentskills.io 规范的指令技能系统，适合把高
 
 对话时，模型先获得技能目录元数据，再按需调用 `load_skill` 加载完整技能指令，避免把所有技能全文一次性注入上下文。
 
+### 技能来源
+
+Chatbox 支持多种技能来源：
+
+| 来源 | 说明 |
+|------|------|
+| Chatbox Skills | 通过设置页 Spotlight 搜索安装，或在对话中让 AI 安装 |
+| Claude Code Skills | 自动发现 `~/.claude/skills/` 目录中的技能 |
+
+当两个来源的技能同名时，Chatbox Skills 优先。
+
+### 在对话中安装技能
+
+在 Agent Mode 开启时，AI 可以通过 `install_skill` 工具安装新技能：在沙箱中下载准备技能文件，然后安装到本地。安装后自动启用。
+
+### 命令执行（user_exec）
+
+On 模式下，AI 可在任务需要用户真实环境时通过 `user_exec` 执行命令，不要求先加载 Skill。该工具受分层审批机制保护：安全只读命令可通过本地白名单，符合条件的低风险命令可由 AI 安全评估自动通过，其余命令暂停等待用户确认；Full Access 会跳过逐次审批。
+
 > Skills 当前为桌面端能力，Web/移动端不显示相关入口。
 
 详见 [Agent Skills](./agent-skills.md)。
+
+## 代码执行
+
+在 Chat 模式下，通过 Agent Mode 启用代码执行后，AI 可以在桌面端运行 Node.js 或平台可用的 Shell（Windows 优先 PowerShell，Bash 可选）、处理上传文件、生成可下载文件和 HTML 预览。核心文件工具不依赖 Bash 或 WSL。该能力聚焦简单文件处理和数据计算，不预装 Python 科学计算栈，也不鼓励安装大型依赖包。详见 [Chat 代码执行](./code-execution.md)。
 
 ## 文件读取
 

@@ -40,6 +40,9 @@ export function useSkillTranslation(skills: SkillInfo[]): UseSkillTranslationRes
       return
     }
 
+    // Show original skills immediately, translate in background
+    setTranslatedSkills(skills)
+
     let cancelled = false
 
     const translateSkills = async () => {

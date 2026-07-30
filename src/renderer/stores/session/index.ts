@@ -15,6 +15,14 @@
  */
 
 export { createAttachmentResolver } from './attachment-resolver'
+export {
+  createDefaultAgentModeEntry,
+  getSessionAgentModeEntry,
+  getSessionAgentModeFromSession,
+  lockSessionAgentMode,
+  setSessionAgentMode,
+  useSessionAgentMode,
+} from './agent-mode'
 // CRUD operations (8 functions)
 export {
   clear,
@@ -59,7 +67,13 @@ export {
 } from './naming'
 export { getOCRModel, ocrImagesInMessages } from './ocr-helper'
 // Orchestration and AI helpers
-export { orchestrateGeneration } from './orchestration'
+export {
+  continuePausedToolCall,
+  isRetryableToolCallStep,
+  orchestrateGeneration,
+  retryFromLastToolCallAfterApiError,
+  stopPausedToolCall,
+} from './orchestration'
 export { createLoadingPictures } from './pictures'
 // Thread operations (9 functions)
 export {

@@ -714,13 +714,12 @@ function ProviderSettings({ providerId }: { providerId: string }) {
             <Flex gap="xs" align="center">
               <TextInput
                 flex={1}
-                value={providerSettings?.apiHost}
-                placeholder={baseInfo.defaultSettings?.apiHost}
+                value={providerSettings?.apiHost || baseInfo.defaultSettings?.apiHost || ''}
                 onChange={handleApiHostChange}
               />
             </Flex>
             <Text span size="xs" flex="0 1 auto" c="chatbox-secondary">
-              {normalizedBuiltinApiHost.apiHost + normalizedBuiltinApiHost.apiPath}
+              {t('Preview')}: {normalizedBuiltinApiHost.apiHost + normalizedBuiltinApiHost.apiPath}
             </Text>
           </Stack>
         )}
@@ -763,6 +762,7 @@ function ProviderSettings({ providerId }: { providerId: string }) {
                 </Stack>
               </Flex>
               <Text span size="xs" flex="0 1 auto" c="chatbox-secondary">
+                {t('Preview')}:{' '}
                 {normalizeAPIHost(providerSettings, baseInfo.type).apiHost +
                   normalizeAPIHost(providerSettings, baseInfo.type).apiPath}
               </Text>
@@ -1281,7 +1281,9 @@ function ProviderSettings({ providerId }: { providerId: string }) {
                 ) : modelTestResult.basicTest?.status === 'error' ? (
                   <Flex align="center" gap="xs" className="w-full">
                     <Text span c="chatbox-error" maw="100%">
-                      {t('Connection failed!')}
+                      {t(
+                        'Connection failed! Please make sure the API key was copied completely, has no extra spaces, has sufficient balance, matches the provider, and has not expired.'
+                      )}
                       <div className="bg-red-50 dark:bg-red-900/20 px-2 py-2">
                         <Text size="xs" c="chatbox-error">
                           {modelTestResult.basicTest.error}

@@ -21,6 +21,16 @@ export type ExportChatScope = 'all_threads' | 'current_thread'
 
 export type ExportChatFormat = 'Markdown' | 'TXT' | 'HTML'
 
+// Agent Mode
+export type AgentModeValue = 'auto' | 'on' | 'off'
+export type AgentModeLockReason = 'file_upload' | 'load_skill' | 'message_sent' | null
+
+export interface AgentModeEntry {
+  value: AgentModeValue
+  locked: boolean
+  lockReason: AgentModeLockReason
+}
+
 export function isChatSession(session: Session) {
   return session.type === 'chat' || !session.type
 }
@@ -102,6 +112,10 @@ export interface CopilotDetail {
 export interface Toast {
   id: string
   content: string
+  action?: {
+    label: string
+    settingsPath?: string
+  }
   duration?: number
 }
 
@@ -422,4 +436,3 @@ export * from './types/image-generation'
 export * from './types/session'
 export * from './types/settings'
 export * from './types/skills'
-export * from './types/task-session'

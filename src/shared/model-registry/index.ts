@@ -16,4 +16,4 @@ export {
 
 export { extractContextWindows, transformFullResponse, transformModelEntry, transformProviderModels } from './transform'
 
-export { enrichModelFromRegistry, findModelInRegistry, setRuntimeRegistry } from './enrich'
+export { enrichModelFromRegistry, findModelInRegistry, getRegistryModelMeta, setRuntimeRegistry } from './enrich'

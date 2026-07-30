@@ -1,19 +1,25 @@
 import { z } from 'zod'
 
+export const DEFAULT_ENABLED_BUILTIN_SKILL_NAMES = ['chatbox-product-info', 'vibedrop'] as const
+
 // ===== Skill Source Types =====
 
 /**
  * SkillSource: Metadata about where a skill comes from
- * - type: Source type (builtin, local, marketplace, github)
+ * - type: Source type (builtin, local, marketplace, github, chat, claude-code, agents)
+ *   - claude-code: discovered from Claude Code's ~/.claude/skills
+ *   - agents: discovered from the shared agent skills dir ~/.agents/skills (codex, etc.)
  * - repo: Optional repository URL or identifier
- * - commitHash: Optional commit hash for version tracking
+ * - commitHash: Optional repo HEAD commit hash (legacy version tracking)
+ * - treeSha: Optional git subtree SHA scoped to skillPath (preferred for update checks)
  * - installedAt: Optional ISO timestamp of installation
  * - skillPath: Optional file system path to skill
  */
 export interface SkillSource {
-  type: 'builtin' | 'local' | 'marketplace' | 'github'
+  type: 'builtin' | 'local' | 'marketplace' | 'github' | 'chat' | 'claude-code' | 'agents'
   repo?: string
   commitHash?: string
+  treeSha?: string
   installedAt?: string
   skillPath?: string
 }
@@ -61,13 +67,11 @@ export interface SkillMetadata {
  * - Extends SkillMetadata with path and isBuiltin
  * - path: File system path to the skill
  * - isBuiltin: Whether this is a built-in skill
- * - bodyTokenEstimate: Optional estimated token count for skill body
- * - source: Optional source metadata (builtin, local, marketplace, github)
+ * - source: Optional source metadata (builtin, local, marketplace, github, chat, claude-code)
  */
 export interface SkillInfo extends SkillMetadata {
   path: string
   isBuiltin: boolean
-  bodyTokenEstimate?: number
   source?: SkillSource
 }
 
@@ -77,10 +81,14 @@ export interface SkillInfo extends SkillMetadata {
  * Zod schema for skill settings
  * - enabledSkillNames: Array of custom skill names to enable
  * - translationEnabled: Whether translation feature is enabled for skills
+ * - builtinDefaultsInitialized: Whether one-time default built-in skills have been applied
+ * - appliedDefaultBuiltinSkillNames: Built-in defaults that have already been auto-enabled
  */
 export const SkillSettingsSchema = z.object({
-  enabledSkillNames: z.array(z.string()).default([]),
+  enabledSkillNames: z.array(z.string()).default([...DEFAULT_ENABLED_BUILTIN_SKILL_NAMES]),
   translationEnabled: z.boolean().default(true),
+  builtinDefaultsInitialized: z.boolean().default(false),
+  appliedDefaultBuiltinSkillNames: z.array(z.string()).default([...DEFAULT_ENABLED_BUILTIN_SKILL_NAMES]),
 })
 
 // ===== Type Exports =====

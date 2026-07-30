@@ -1,4 +1,4 @@
-import { type AnthropicProviderOptions, createAnthropic } from '@ai-sdk/anthropic'
+import { createAnthropic } from '@ai-sdk/anthropic'
 import type { LanguageModelV3 } from '@ai-sdk/provider'
 import type { ModelMessage, ToolSet } from 'ai'
 import AbstractAISDKModel, { type CallSettings } from '../../../models/abstract-ai-sdk'
@@ -9,6 +9,7 @@ import { createFetchWithProxy } from '../../../models/utils/fetch-proxy'
 import type { ProviderModelInfo, StreamTextResult } from '../../../types'
 import type { ModelDependencies } from '../../../types/adapters'
 import { normalizeClaudeHost } from '../../../utils/llm_utils'
+import { normalizeClaudeReasoningOptions } from '../../../utils/reasoning-control'
 
 interface Options {
   apiKey: string
@@ -74,11 +75,11 @@ export default class CustomClaude extends AbstractAISDKModel {
 
   protected getCallSettings(options: CallChatCompletionOptions): CallSettings {
     const isModelSupportReasoning = this.isSupportReasoning()
-    let providerOptions = {} as { anthropic: AnthropicProviderOptions }
+    let providerOptions: CallSettings['providerOptions'] = {}
     if (isModelSupportReasoning) {
       providerOptions = {
         anthropic: {
-          ...(options.providerOptions?.claude || {}),
+          ...(normalizeClaudeReasoningOptions(this.options.model.modelId, options.providerOptions?.claude) || {}),
         },
       }
     }

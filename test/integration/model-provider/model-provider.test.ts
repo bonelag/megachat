@@ -17,7 +17,6 @@ import type AbstractAISDKModel from '../../../src/shared/models/abstract-ai-sdk'
 import {
   type ModelProvider,
   ModelProviderEnum,
-  type ProviderBaseInfo,
   type ProviderModelInfo,
   type SessionSettings,
   type Settings,
@@ -54,8 +53,8 @@ const PROVIDER_TEST_MODELS: Record<ModelProvider, ProviderModelInfo[]> = {
   [ModelProviderEnum.Ollama]: [],
   [ModelProviderEnum.Groq]: [{ modelId: 'llama-3.1-8b-instant', capabilities: ['tool_use'] }],
   [ModelProviderEnum.DeepSeek]: [
-    { modelId: 'deepseek-chat', capabilities: ['tool_use', 'reasoning'] },
-    { modelId: 'deepseek-reasoner', capabilities: ['tool_use', 'reasoning'] },
+    { modelId: 'deepseek-v4-flash', capabilities: ['tool_use', 'reasoning'] },
+    { modelId: 'deepseek-v4-pro', capabilities: ['tool_use', 'reasoning'] },
   ],
   [ModelProviderEnum.SiliconFlow]: [],
   [ModelProviderEnum.VolcEngine]: [],

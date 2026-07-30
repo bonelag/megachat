@@ -2,7 +2,7 @@ productName: Chatbox
 appId: xyz.chatboxapp.app
 asar: true
 asarUnpack:
-  - "**\\*.{node,dll}"
+  - "**/*.{node,dll}"
   - "**/node_modules/libsql/**"
 files:
   - "dist"
@@ -14,8 +14,8 @@ files:
   - "package.json"
 
 beforePack: .erb/scripts/ensure-app-deps.cjs
+afterPack: .erb/scripts/after-pack.cjs
 afterSign: .erb/scripts/notarize.js
-afterPack: .erb/scripts/patch-libsql.cjs
 
 # releaseInfo:
 #   releaseNotes: See the changelog for details

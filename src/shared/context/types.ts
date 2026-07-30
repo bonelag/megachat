@@ -47,9 +47,23 @@ export interface ContextBuilderOptions {
   keepToolCallRounds?: number
 
   /**
+   * Message IDs whose tool call parts should always be preserved.
+   * This is used for cache-friendly continuation flows where a recent
+   * tool result is expected to remain in the prompt.
+   */
+  preserveToolCallMessageIds?: string[]
+
+  /**
    * Whether the model supports tool use for file reading (optional)
    * When true, large files are truncated with instructions to use tools
    * Default: false
    */
   modelSupportToolUseForFile?: boolean
+
+  /**
+   * When true, inject <ATTACHMENT_FILE> metadata instead of file content.
+   * Files are available in the sandbox for code_execution / read_file tools.
+   * Default: false
+   */
+  sandboxMode?: boolean
 }

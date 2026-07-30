@@ -12,12 +12,12 @@ export async function initData() {
 
 async function initSessionsIfNeeded() {
   const metaStorage = await chatStore.getMetaStorage()
-  const total = await metaStorage.getTotal()
+  const total = await metaStorage.getAllTotal()
   if (total > 0) {
     return
   }
 
-  const lang = await platform.getLocale().catch((e) => 'en')
+  const lang = await platform.getLocale().catch(() => 'en')
   const defaultSessions = lang.startsWith('zh') ? defaultSessionsForCN : defaultSessionsForEN
 
   for (const session of defaultSessions) {

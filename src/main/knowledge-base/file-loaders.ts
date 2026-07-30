@@ -11,6 +11,7 @@ import type { DocumentParserConfig } from '../../shared/types/settings'
 import { sentry } from '../adapters/sentry'
 import { getLogger } from '../util'
 import { checkProcessingTimeouts, getDatabase, getVectorStore } from './db'
+import { isExpectedKnowledgeBaseRerankError } from './error-reporting'
 import { getEmbeddingProvider, getRerankProvider } from './model-providers'
 import { getEffectiveParserConfig, type ParserFileMeta, parseFileWithRouter } from './parsers'
 
@@ -437,14 +438,21 @@ export async function searchKnowledgeBase(kbId: number, query: string) {
         ...r.metadata,
       }))
     } catch (e) {
-      log.error(`[FILE] Failed to rerank: kbId=${kbId}, query=${query}`, e)
-      sentry.withScope((scope) => {
-        scope.setTag('component', 'knowledge-base-file')
-        scope.setTag('operation', 'rerank')
-        scope.setExtra('kbId', kbId)
-        scope.setExtra('query', query)
-        sentry.captureException(e)
-      })
+      const expectedRerankError = isExpectedKnowledgeBaseRerankError(e)
+      const logMessage = `[FILE] Failed to rerank: kbId=${kbId}, queryLength=${query.length}`
+
+      if (expectedRerankError) {
+        log.warn(logMessage, e)
+      } else {
+        log.error(logMessage, e)
+        sentry.withScope((scope) => {
+          scope.setTag('component', 'knowledge-base-file')
+          scope.setTag('operation', 'rerank')
+          scope.setExtra('kbId', kbId)
+          scope.setExtra('queryLength', query.length)
+          sentry.captureException(e)
+        })
+      }
       return results.map((r) => ({
         id: r.id,
         score: r.score,
@@ -452,13 +460,13 @@ export async function searchKnowledgeBase(kbId: number, query: string) {
       }))
     }
   } catch (e) {
-    log.error(`[FILE] Failed to search: kbId=${kbId}, query=${query}`, e)
+    log.error(`[FILE] Failed to search: kbId=${kbId}, queryLength=${query.length}`, e)
 
     sentry.withScope((scope) => {
       scope.setTag('component', 'knowledge-base-file')
       scope.setTag('operation', 'search_knowledge_base')
       scope.setExtra('kbId', kbId)
-      scope.setExtra('query', query)
+      scope.setExtra('queryLength', query.length)
       sentry.captureException(e)
     })
 

@@ -21,6 +21,7 @@ export interface UseContextTokensOptions {
   settings: Partial<Settings>
   model?: { provider: string; modelId: string }
   modelSupportToolUseForFile: boolean
+  sandboxMode?: boolean
   constructedMessage?: Message
 }
 
@@ -159,7 +160,7 @@ export function getLatestCompactionBoundaryId(compactionPoints?: CompactionPoint
  * - pendingTasks (real-time queue status)
  */
 export function useContextTokens(options: UseContextTokensOptions): UseContextTokensResult {
-  const { sessionId, session, settings, model, modelSupportToolUseForFile, constructedMessage } = options
+  const { sessionId, session, settings, model, modelSupportToolUseForFile, sandboxMode, constructedMessage } = options
 
   // 1. contextMessages must be stable
   const contextMessages = useMemo(() => {
@@ -189,6 +190,7 @@ export function useContextTokens(options: UseContextTokensOptions): UseContextTo
     contextMessages,
     model,
     modelSupportToolUseForFile,
+    sandboxMode,
   })
 
   const isCalculating = tokenResult.isCalculating

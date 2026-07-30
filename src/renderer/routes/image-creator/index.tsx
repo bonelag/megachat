@@ -33,6 +33,7 @@ import Page from '@/components/layout/Page'
 import { type ImageModelGroup, useImageModelGroups } from '@/hooks/useImageModelGroups'
 import { useProviders } from '@/hooks/useProviders'
 import { useIsSmallScreen } from '@/hooks/useScreenChange'
+import useVersion from '@/hooks/useVersion'
 import { getLogger } from '@/lib/utils'
 import storage from '@/storage'
 import { StorageKeyGenerator } from '@/storage/StoreStorage'
@@ -216,9 +217,17 @@ function ImageCreatorPage() {
   const hasLicense = useSettingsStore((s) => Boolean(s.licenseKey))
   const hasExpiredLicense = useSettingsStore((s) => s.hasExpiredLicense)
   const isLoggedIn = useAuthInfoStore((s) => Boolean(s.accessToken && s.refreshToken))
+  const { isExceeded, isExceededResolved } = useVersion()
   const welcomeCardMode = useMemo(
-    () => getHomeWelcomeCardMode({ providerCount: providers.length, isLoggedIn, hasLicense, hasExpiredLicense }),
-    [providers.length, isLoggedIn, hasLicense, hasExpiredLicense]
+    () =>
+      getHomeWelcomeCardMode({
+        providerCount: providers.length,
+        isLoggedIn,
+        hasLicense,
+        hasExpiredLicense,
+        hideForStoreReview: isExceeded || !isExceededResolved,
+      }),
+    [providers.length, isLoggedIn, hasLicense, hasExpiredLicense, isExceeded, isExceededResolved]
   )
 
   const [prompt, setPrompt] = useState('')

@@ -1,5 +1,5 @@
 import type { ModelInterface } from '@shared/models/types'
-import type { Message, MessageToolCallPart } from '@shared/types'
+import type { Message, MessageContentToolCallPart } from '@shared/types'
 import { uniqueId } from 'lodash'
 import {
   combinedSearchByPromptEngineering,
@@ -17,11 +17,11 @@ export async function applyLegacyToolFallback(options: {
   signal: AbortSignal
 }): Promise<{
   promptMsgs: Message[]
-  fallbackToolCallPart: MessageToolCallPart | undefined
+  fallbackToolCallPart: MessageContentToolCallPart | undefined
 }> {
   const { model, signal } = options
   let { promptMsgs } = options
-  let fallbackToolCallPart: MessageToolCallPart | undefined
+  let fallbackToolCallPart: MessageContentToolCallPart | undefined
 
   const kbNotSupported = options.knowledgeBase && !model.isSupportToolUse('knowledge-base')
   const webNotSupported = options.webBrowsing && !model.isSupportToolUse('web-browsing')

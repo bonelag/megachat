@@ -34,6 +34,13 @@ describe('formatNumber', () => {
     expect(formatNumber(1500000, 2)).toBe('1.50M')
     expect(formatNumber(-1500, 1)).toBe('-1.5K')
   })
+
+  it('formats Chinese compact units when requested', () => {
+    expect(formatNumber(1000, 0, true)).toBe('1千')
+    expect(formatNumber(12000, 1, true)).toBe('1.2万')
+    expect(formatNumber(12000000, 2, true)).toBe('1.20千万')
+    expect(formatNumber(120000000, 2, true)).toBe('1.20亿')
+  })
 })
 
 describe('formatUsage', () => {
@@ -44,5 +51,9 @@ describe('formatUsage', () => {
 
   it('passes decimals parameter through to formatNumber', () => {
     expect(formatUsage(1500, 1000000, 1)).toBe('1.5K/1.0M')
+  })
+
+  it('passes Chinese compact unit option through to formatNumber', () => {
+    expect(formatUsage(210000, 12000000, 1, true)).toBe('21.0万/1.2千万')
   })
 })

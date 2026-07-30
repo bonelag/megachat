@@ -160,7 +160,9 @@ export function RouteComponent() {
         <MaxContextMessageCountSlider
           wrapperProps={{ gap: 'xxs' }}
           labelProps={{ fw: undefined }}
-          value={settings?.maxContextMessageCount ?? chatSessionSettings().maxContextMessageCount!}
+          value={
+            settings?.maxContextMessageCount ?? chatSessionSettings().maxContextMessageCount ?? Number.MAX_SAFE_INTEGER
+          }
           onChange={(v) => setSettings({ maxContextMessageCount: v })}
         />
 
@@ -272,7 +274,7 @@ export function RouteComponent() {
           <Text c="chatbox-tertiary">{t('Display')}</Text>
 
           <MessageLayoutSelector
-            value={settings.messageLayout ?? 'left'}
+            value={settings.messageLayout ?? 'bubble'}
             onValueChange={(val) => setSettings({ messageLayout: val })}
           />
 

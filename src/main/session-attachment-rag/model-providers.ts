@@ -5,30 +5,61 @@ import { getChatboxAPIOrigin } from '../../shared/request/chatboxai_pool'
 import { parseKnowledgeBaseModelString } from '../../shared/utils/knowledge-base-model-parser'
 import { sentry } from '../adapters/sentry'
 import { cache } from '../cache'
-import { getLogger } from '../util'
 import { createEmbeddingProviderFromModelString } from '../knowledge-base/model-providers'
+import { getDefaultEmbeddingModelString, getDefaultRerankModelString } from '../rag-default-models'
 import { getSettings, store } from '../store-node'
+import { getLogger } from '../util'
 
 const log = getLogger('session-attachment-rag:model-providers')
 
 const SESSION_ATTACHMENT_EMBEDDING_MODEL = 'chatbox-ai:text-embedding-3-small'
 
-export async function getSessionAttachmentEmbeddingProvider(): Promise<EmbeddingModel> {
+export type SessionAttachmentEmbeddingProviderResolution = {
+  provider: EmbeddingModel
+  modelString: string
+  source: 'chatbox-ai-license' | 'default-embedding-model'
+}
+
+export async function getSessionAttachmentEmbeddingProviderWithResolution(): Promise<SessionAttachmentEmbeddingProviderResolution> {
+  const settings = getSettings()
+  const hasLicense = Boolean(store.get('settings.licenseKey'))
+  const defaultEmbeddingModel = getDefaultEmbeddingModelString(settings)
+  const embeddingModel = defaultEmbeddingModel || (hasLicense ? SESSION_ATTACHMENT_EMBEDDING_MODEL : undefined)
+  const source: SessionAttachmentEmbeddingProviderResolution['source'] = defaultEmbeddingModel
+    ? 'default-embedding-model'
+    : 'chatbox-ai-license'
+
+  if (!embeddingModel) {
+    throw new Error('session attachment embedding model not set')
+  }
+
   try {
-    return await createEmbeddingProviderFromModelString(SESSION_ATTACHMENT_EMBEDDING_MODEL)
+    const provider = await createEmbeddingProviderFromModelString(embeddingModel)
+    return {
+      provider,
+      modelString: embeddingModel,
+      source,
+    }
   } catch (error) {
-    log.error(
-      `[MODEL] Failed to resolve fixed session attachment embedding provider: ${SESSION_ATTACHMENT_EMBEDDING_MODEL}`,
-      error
-    )
+    log.error(`[MODEL] Failed to resolve session attachment embedding provider: ${embeddingModel}`, error)
     sentry.withScope((scope) => {
       scope.setTag('component', 'session-attachment-rag-model')
       scope.setTag('operation', 'get_embedding_provider')
-      scope.setExtra('embeddingModel', SESSION_ATTACHMENT_EMBEDDING_MODEL)
+      scope.setExtra('embeddingModel', embeddingModel)
       sentry.captureException(error)
     })
     throw error
   }
+}
+
+export async function getSessionAttachmentEmbeddingProvider(): Promise<EmbeddingModel> {
+  return (await getSessionAttachmentEmbeddingProviderWithResolution()).provider
+}
+
+export function getDefaultSessionAttachmentRerankModelString(): string | undefined {
+  const rerankModel = getDefaultRerankModelString(getSettings())
+  log.debug(`[MODEL] Default session attachment rerank model: ${rerankModel ?? 'none'}`)
+  return rerankModel
 }
 
 export async function getSessionAttachmentRerankProvider(modelString?: string | null) {

@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { ModelProviderEnum, ModelProviderType } from './provider'
-import { SkillSettingsSchema } from './skills'
+import { DEFAULT_ENABLED_BUILTIN_SKILL_NAMES, SkillSettingsSchema } from './skills'
 
 // Re-export for backward compatibility
 export { ModelProviderType } from './provider'
@@ -9,9 +9,9 @@ export { ModelProviderType } from './provider'
 
 /**
  * Document parser service type
- * - none: No parsing service, only supports basic text files (mobile/web default)
+ * - none: No parsing service, only supports basic text files (legacy mobile/web setting)
  * - local: Local parsing using built-in libraries (desktop default)
- * - chatbox-ai: Chatbox cloud parsing service (requires login, consumes compute points)
+ * - chatbox-ai: Local-first parsing with Chatbox cloud fallback (mobile/web default)
  * - mineru: Third-party MinerU parsing service (desktop only)
  */
 export type DocumentParserType = 'none' | 'local' | 'chatbox-ai' | 'mineru'
@@ -31,8 +31,18 @@ export const DEFAULT_DOCUMENT_PARSER_CONFIG: DocumentParserConfig = {
   type: 'local',
 }
 
+export const AgentModeEntrySchema = z.object({
+  value: z.enum(['auto', 'on', 'off']),
+  locked: z.boolean(),
+  lockReason: z.enum(['file_upload', 'load_skill', 'message_sent']).nullable(),
+})
+
 export const ProviderModelInfoSchema = z.object({
   modelId: z.string(),
+  // The provider id this model was resolved under (e.g. 'chatbox-ai', 'qwen').
+  // Stamped at model-resolution time (getModel); not part of persisted model lists.
+  // Used to evaluate reasoning-control support with the same provider+model-id logic as the UI.
+  providerId: z.string().optional().catch(undefined),
   type: z.enum(['chat', 'embedding', 'rerank', 'image']).optional().catch(undefined),
   apiStyle: z.enum(['google', 'openai', 'openai-responses', 'anthropic']).optional().catch(undefined),
   nickname: z.string().optional().catch(undefined),
@@ -118,14 +128,21 @@ const ProviderBaseInfoSchema = z.discriminatedUnion('isCustom', [
 ])
 
 const ClaudeParamsSchema = z.object({
-  thinking: z.object({
-    type: z.enum(['enabled', 'disabled']).default('enabled'),
-    budgetTokens: z.number().catch(1024),
-  }),
+  thinking: z
+    .object({
+      type: z.enum(['enabled', 'disabled']).default('enabled'),
+      budgetTokens: z.number().catch(1024),
+    })
+    .optional()
+    .catch(undefined),
+  effort: z.enum(['low', 'medium', 'high']).optional().catch(undefined),
 })
 
 const OpenAIParamsSchema = z.object({
-  reasoningEffort: z.enum(['low', 'medium', 'high']).optional().catch(undefined),
+  reasoningEffort: z.enum(['none', 'minimal', 'low', 'medium', 'high', 'xhigh']).optional().catch(undefined),
+  reasoningSummary: z.enum(['auto', 'concise', 'detailed']).optional().catch(undefined),
+  include: z.array(z.string()).optional().catch(undefined),
+  forceReasoning: z.boolean().optional().catch(undefined),
 })
 
 const GoogleParamsSchema = z.object({
@@ -136,10 +153,41 @@ const GoogleParamsSchema = z.object({
   }),
 })
 
+const DeepSeekParamsSchema = z.object({
+  thinking: z
+    .object({
+      type: z.enum(['enabled', 'disabled']).default('enabled'),
+    })
+    .optional()
+    .catch(undefined),
+})
+
+const ReasoningOptionsSchema = z.object({
+  effort: z.enum(['minimal', 'low', 'medium', 'high']).optional().catch(undefined),
+  max_tokens: z.number().optional().catch(undefined),
+  enabled: z.boolean().optional().catch(undefined),
+  exclude: z.boolean().optional().catch(undefined),
+})
+
+const OpenAICompatibleParamsSchema = z.object({
+  reasoningEffort: z.string().optional().catch(undefined),
+  reasoning: ReasoningOptionsSchema.optional().catch(undefined),
+  include: z.array(z.string()).optional().catch(undefined),
+  enable_thinking: z.boolean().optional().catch(undefined),
+  thinking_budget: z.number().optional().catch(undefined),
+})
+
+const OpenRouterParamsSchema = z.object({
+  reasoning: ReasoningOptionsSchema.optional().catch(undefined),
+})
+
 export const ProviderOptionsSchema = z.object({
   claude: ClaudeParamsSchema.optional(),
   openai: OpenAIParamsSchema.optional(),
   google: GoogleParamsSchema.optional(),
+  deepseek: DeepSeekParamsSchema.optional(),
+  openaiCompatible: OpenAICompatibleParamsSchema.optional(),
+  openrouter: OpenRouterParamsSchema.optional(),
 })
 
 // NOTICE: Global settings is for new session default settings, set to session when session created, changes will not affect existing sessions
@@ -158,18 +206,28 @@ export const SessionSettingsSchema = GlobalSessionSettingsSchema.extend({
   imageGenerateNum: z.number().optional().catch(1),
   providerOptions: ProviderOptionsSchema.optional().catch(undefined),
   autoCompaction: z.boolean().optional().catch(undefined),
+  // Real local directories the user grants the agent sandbox read/write access to
+  // (like /tmp): files under these paths are read/written without per-action approval.
+  // Desktop only.
+  workingDirectories: z.array(z.string()).optional().catch(undefined),
+  // When enabled, Work Mode skips per-action approval for user_exec and real filesystem mutations.
+  agentFullAccess: z.boolean().optional().catch(undefined),
+  agentMode: AgentModeEntrySchema.optional().catch(undefined),
 })
 
 const UnifiedTokenUsageDetailSchema = z.object({
-  type: z.string(), // "plan" | "trial" | "invitation_reward" | ... (more types in future)
+  type: z.string(), // "plan" | "invitation_reward" | ... (more types in future)
   token_usage: z.number(),
   token_limit: z.number(),
   expires_at: z.string().nullish(),
 })
 
+const ChatboxAIPlanTypeSchema = z.enum(['free', 'lite', 'pro', 'pro_plus', 'quota_pack'])
+
 const ChatboxAILicenseDetailSchema = z.object({
   type: z.enum(['chatboxai-3.5', 'chatboxai-4']).optional(),
   name: z.string(),
+  plan: ChatboxAIPlanTypeSchema.optional().catch(undefined),
   status: z.string().optional(),
   defaultModel: z.enum(['chatboxai-3.5', 'chatboxai-4']).optional(),
   remaining_quota_35: z.number(),
@@ -216,22 +274,47 @@ const ShortcutSendValueSchema = z.enum(shortcutSendValues as [string, ...string[
 export const shortcutToggleWindowValues = ['', 'Alt+`', 'Alt+Space', 'Ctrl+Alt+Space', 'Ctrl+Space']
 const ShortcutToggleWindowValueSchema = z.enum(shortcutToggleWindowValues as [string, ...string[]])
 
-const ShortcutSettingSchema = z.object({
-  quickToggle: ShortcutToggleWindowValueSchema,
-  inputBoxFocus: z.string(),
-  inputBoxWebBrowsingMode: z.string(),
-  newChat: z.string(),
-  newPictureChat: z.string(),
-  sessionListNavNext: z.string(),
-  sessionListNavPrev: z.string(),
-  sessionListNavTargetIndex: z.string(),
-  dialogOpenSearch: z.string(),
-  optionNavUp: z.string(),
-  optionNavDown: z.string(),
-  optionSelect: z.string(),
-  inputBoxSendMessage: ShortcutSendValueSchema,
-  inputBoxSendMessageWithoutResponse: ShortcutSendValueSchema,
-})
+const newThreadShortcut = 'mod+shift+n'
+const legacyNewThreadShortcut = 'mod+r'
+const legacyNewPictureChatShortcut = 'mod+shift+n'
+
+const ShortcutSettingSchema = z.preprocess(
+  (value) => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      return value
+    }
+
+    const shortcuts: Record<string, unknown> = { ...value }
+    if (
+      shortcuts.messageListRefreshContext === undefined ||
+      shortcuts.messageListRefreshContext === legacyNewThreadShortcut
+    ) {
+      shortcuts.messageListRefreshContext = newThreadShortcut
+    }
+    if (shortcuts.newPictureChat === legacyNewPictureChatShortcut) {
+      shortcuts.newPictureChat = ''
+    }
+    return shortcuts
+  },
+  z.object({
+    quickToggle: ShortcutToggleWindowValueSchema,
+    inputBoxFocus: z.string(),
+    inputBoxWebBrowsingMode: z.string(),
+    newChat: z.string(),
+    newPictureChat: z.string(),
+    sessionListNavNext: z.string(),
+    sessionListNavPrev: z.string(),
+    sessionListNavTargetIndex: z.string(),
+    // Keep the historical key name so exported settings still load in downgrade/import paths.
+    messageListRefreshContext: z.string().default(newThreadShortcut),
+    dialogOpenSearch: z.string(),
+    optionNavUp: z.string(),
+    optionNavDown: z.string(),
+    optionSelect: z.string(),
+    inputBoxSendMessage: ShortcutSendValueSchema,
+    inputBoxSendMessageWithoutResponse: ShortcutSendValueSchema,
+  })
+)
 
 const ExtensionSettingsSchema = z.object({
   webSearch: z.object({
@@ -292,11 +375,27 @@ const MCPSettingsSchema = z.object({
   enabledBuiltinServers: z.array(z.string()),
 })
 
+const VibedropPublicationSchema = z.object({
+  slug: z.string(),
+  url: z.string(),
+  visibility: z.enum(['unlisted', 'public']),
+  uniqueId: z.string().optional(),
+  updatedAt: z.number(),
+})
+
 export enum Theme {
   Dark,
   Light,
   System,
 }
+
+const DefaultModelSelectionSchema = z
+  .object({
+    provider: z.string(),
+    model: z.string(),
+  })
+  .optional()
+  .catch(undefined)
 
 export const SettingsSchema = GlobalSessionSettingsSchema.extend({
   providers: z.record(z.string(), ProviderSettingsSchema).optional().catch(undefined),
@@ -340,6 +439,8 @@ export const SettingsSchema = GlobalSessionSettingsSchema.extend({
     })
     .optional()
     .catch(undefined),
+  defaultEmbeddingModel: DefaultModelSelectionSchema,
+  defaultRerankModel: DefaultModelSelectionSchema,
 
   // chatboxai
   licenseKey: z.string().optional(),
@@ -352,6 +453,17 @@ export const SettingsSchema = GlobalSessionSettingsSchema.extend({
   // 在 licensekeyview UI中显示/记忆的key，以免用户使用 login 方式后老 key 被清除，他也不记得
   memorizedManualLicenseKey: z.string().optional(),
   chatboxAIDesktopPromptDismissed: z.boolean().default(false),
+
+  // VibeDrop HTML artifact publishing
+  // Cached publish key issued by chatbox-backend, bound to the account email it
+  // was issued for so it is never reused across accounts. Cleared on logout.
+  vibedropPublishKey: z.object({ email: z.string(), key: z.string() }).optional().catch(undefined),
+  // Maps a code block's uniqueId → its published VibeDrop slug, so re-publishing
+  // the same artifact updates the same site (stable URL) instead of creating new.
+  vibedropSlugs: z.record(z.string(), z.string()).optional().catch(undefined),
+  // Recent published sites grouped by session. Used to let users explicitly
+  // choose between creating a page and replacing an existing page.
+  vibedropSessionPublications: z.record(z.string(), z.array(VibedropPublicationSchema)).optional().catch(undefined),
 
   // chat settings
   showWordCount: z.boolean().optional().catch(undefined),
@@ -421,8 +533,10 @@ export const SettingsSchema = GlobalSessionSettingsSchema.extend({
   extension: ExtensionSettingsSchema,
   mcp: MCPSettingsSchema,
   skills: SkillSettingsSchema.catch({
-    enabledSkillNames: [],
+    enabledSkillNames: [...DEFAULT_ENABLED_BUILTIN_SKILL_NAMES],
     translationEnabled: true,
+    builtinDefaultsInitialized: true,
+    appliedDefaultBuiltinSkillNames: [...DEFAULT_ENABLED_BUILTIN_SKILL_NAMES],
   }),
 })
 
@@ -442,6 +556,7 @@ export type GoogleParams = z.infer<typeof GoogleParamsSchema>
 export type ProviderOptions = z.infer<typeof ProviderOptionsSchema>
 export type GlobalSessionSettings = z.infer<typeof GlobalSessionSettingsSchema>
 export type ChatboxAILicenseDetail = z.infer<typeof ChatboxAILicenseDetailSchema>
+export type ChatboxAIPlanType = z.infer<typeof ChatboxAIPlanTypeSchema>
 export type UnifiedTokenUsageDetail = z.infer<typeof UnifiedTokenUsageDetailSchema>
 export type ShortcutSendValue = z.infer<typeof ShortcutSendValueSchema>
 export type ShortcutToggleWindowValue = z.infer<typeof ShortcutToggleWindowValueSchema>

@@ -6,3 +6,9 @@ packages:
 minimumReleaseAge: 10080
 minimumReleaseAgeExclude:
   - "@ruguoapp/*"
+
+patchedDependencies:
+  "@ai-sdk/deepseek@2.0.17": patches/@ai-sdk__deepseek@2.0.17.patch
+  fflate@0.8.3: patches/fflate@0.8.3.patch
+  libsql@0.5.22: patches/libsql@0.5.22.patch
+  mdast-util-gfm-autolink-literal@2.0.1: patches/mdast-util-gfm-autolink-literal@2.0.1.patch

@@ -1,5 +1,5 @@
 import NiceModal from '@ebay/nice-modal-react'
-import { ActionIcon, Badge, Flex, Text, Tooltip } from '@mantine/core'
+import { ActionIcon, Flex, Text, Tooltip } from '@mantine/core'
 import type { Session } from '@shared/types'
 import { IconLayoutSidebarLeftExpand, IconMenu2, IconPencil } from '@tabler/icons-react'
 import clsx from 'clsx'
@@ -83,19 +83,6 @@ export default function Header(props: { session: Session }) {
           <Text fw={600} size="18px" lineClamp={1}>
             {currentSession?.name}
           </Text>
-          {currentSession?.threadName && currentSession.threadName !== currentSession.name && (
-            <Badge
-              size="xs"
-              variant="light"
-              color="gray"
-              ml={6}
-              maw={180}
-              className="flex-shrink-0"
-              classNames={{ label: 'truncate' }}
-            >
-              {currentSession.threadName}
-            </Badge>
-          )}
           <Tooltip label={t('Customize settings for the current conversation')}>
             <ActionIcon
               className="controls"
