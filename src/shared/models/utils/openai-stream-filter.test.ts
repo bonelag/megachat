@@ -58,6 +58,46 @@ describe('filterOpenAICompatibleSseStream', () => {
         expect(text).not.toContain('billing.summary')
         expect(text).toContain('"content":"ok"')
     })
+
+    it('drops null data frames that would fail AI SDK chunk validation', async () => {
+        const sse = [
+            'data: {"choices":[{"delta":{"content":"Hi"}}]}\n',
+            '\n',
+            'data: null\n',
+            '\n',
+            'data: [DONE]\n',
+            '\n',
+        ].join('')
+
+        const input = new ReadableStream<Uint8Array>({
+            start(controller) {
+                controller.enqueue(new TextEncoder().encode(sse))
+                controller.close()
+            },
+        })
+
+        const text = await readStreamText(filterOpenAICompatibleSseStream(input))
+
+        expect(text).toContain('"content":"Hi"')
+        expect(text).toContain('[DONE]')
+        expect(text).not.toContain('data: null')
+    })
+
+    it('drops a trailing null frame left in the buffer', async () => {
+        const input = new ReadableStream<Uint8Array>({
+            start(controller) {
+                controller.enqueue(
+                    new TextEncoder().encode('data: {"choices":[{"delta":{"content":"Hi"}}]}\n\ndata: null')
+                )
+                controller.close()
+            },
+        })
+
+        const text = await readStreamText(filterOpenAICompatibleSseStream(input))
+
+        expect(text).toContain('"content":"Hi"')
+        expect(text).not.toContain('null')
+    })
 })
 
 describe('sanitizeOpenAICompatibleResponse', () => {

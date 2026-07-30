@@ -50,9 +50,10 @@ export function createWebSearchTool(
       const searchInput = input as { query: string }
       return await executor(searchInput.query, abortSignal)
     },
-    toModelOutput: ({ output }) => ({
-      type: 'text',
-      value: formatWebSearchOutput(output),
-    }),
+    toModelOutput: ({ output }: { output: unknown }) =>
+      ({
+        type: 'text',
+        value: formatWebSearchOutput(output),
+      }) as const,
   }
 }

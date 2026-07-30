@@ -2,7 +2,7 @@ import { Haptics, ImpactStyle } from '@capacitor/haptics'
 import NiceModal from '@ebay/nice-modal-react'
 import { ActionIcon, Flex, Text, Tooltip } from '@mantine/core'
 import type { SessionMetaRecord } from '@shared/types'
-import { IconArchive, IconArrowsMoveVertical, IconPinned, IconPinnedFilled } from '@tabler/icons-react'
+import { IconArchive, IconArrowsMoveVertical, IconPinned, IconPinnedFilled, IconTrash } from '@tabler/icons-react'
 import clsx from 'clsx'
 import dayjs from 'dayjs'
 import { type MouseEvent, memo, type PointerEvent, useRef, useState } from 'react'
@@ -11,7 +11,13 @@ import { useIsSmallScreen } from '@/hooks/useScreenChange'
 import { navigateToSettings } from '@/modals/Settings'
 import platform from '@/platform'
 import { router } from '@/router'
-import { archiveSession, countArchivedSessionsMeta, updateSession as updateSessionStore } from '@/stores/chatStore'
+import {
+  archiveSession,
+  confirmSessionDeletion,
+  countArchivedSessionsMeta,
+  deleteSession,
+  updateSession as updateSessionStore,
+} from '@/stores/chatStore'
 import { switchCurrentSession } from '@/stores/sessionActions'
 import * as toastActions from '@/stores/toastActions'
 import { useUIStore } from '@/stores/uiStore'
@@ -59,6 +65,7 @@ function SessionItem(props: Props) {
   const { t } = useTranslation()
   const pinActionLabel = session.starred ? t('Unpin') : t('Pin')
   const archiveActionLabel = t('Archive')
+  const deleteActionLabel = t('Delete')
   const setShowSidebar = useUIStore((s) => s.setShowSidebar)
   const onClick = () => {
     if (props.isReordering) {
@@ -77,6 +84,7 @@ function SessionItem(props: Props) {
   // const smallSize = theme.typography.pxToRem(20)
 
   const [archiving, setArchiving] = useState(false)
+  const [deleting, setDeleting] = useState(false)
   const [actionTooltipDismissed, setActionTooltipDismissed] = useState(false)
   const [mobileMenuOpened, setMobileMenuOpened] = useState(false)
   const [longPressing, setLongPressing] = useState(false)
@@ -134,6 +142,26 @@ function SessionItem(props: Props) {
     } catch (error) {
       console.error('Failed to archive session:', error)
       setArchiving(false)
+    }
+  }
+
+  const deleteCurrentSession = async () => {
+    if (deleting) {
+      return
+    }
+    setDeleting(true)
+    try {
+      if (!(await confirmSessionDeletion(session.id))) {
+        setDeleting(false)
+        return
+      }
+      await deleteSession(session.id)
+      if (selected) {
+        await router.navigate({ to: '/', replace: true })
+      }
+    } catch (error) {
+      console.error('Failed to delete session:', error)
+      setDeleting(false)
     }
   }
 
@@ -213,6 +241,19 @@ function SessionItem(props: Props) {
       disabled: archiving,
       onClick: () => {
         void archiveCurrentSession()
+      },
+    },
+    {
+      // 长按菜单最后一项：红色删除，点一次变成 "Confirm?"，再点一次才真正删除
+      text: deleteActionLabel || '',
+      icon: IconTrash,
+      color: 'chatbox-error',
+      disabled: deleting,
+      doubleCheck: {
+        color: 'chatbox-error',
+      },
+      onClick: () => {
+        void deleteCurrentSession()
       },
     },
   ]

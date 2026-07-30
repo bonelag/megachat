@@ -30,7 +30,21 @@ describe('buildSandboxStdinScript', () => {
     const script = buildSandboxStdinScript(code, 'powershell', 'unused', false, true)
     expect(script).toContain('[Console]::InputEncoding = [Text.UTF8Encoding]::new($false)')
     expect(script).toContain('[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)')
-    expect(script.endsWith(code)).toBe(true)
+    // The program travels as base64 so the console's pre-preamble input codepage cannot
+    // mangle non-ASCII literals; only ASCII bytes go over stdin.
+    expect(script).not.toContain(code)
+    expect(script).toContain(Buffer.from(code, 'utf8').toString('base64'))
+    expect(script.endsWith('Invoke-Expression $__chatboxScript')).toBe(true)
+    // biome-ignore lint/suspicious/noControlCharactersInRegex: asserting the payload is 7-bit clean
+    expect(/^[\x00-\x7f]*$/.test(script)).toBe(true)
+  })
+
+  test('powershell program round-trips non-ASCII source through base64', () => {
+    const code = "$marker = '中文'\n[Console]::Out.Write($marker)"
+    const script = buildSandboxStdinScript(code, 'powershell', 'unused', false)
+    const encoded = script.match(/FromBase64String\('([^']+)'\)/)?.[1]
+    expect(encoded).toBeTruthy()
+    expect(Buffer.from(encoded!, 'base64').toString('utf8')).toBe(code)
   })
 
   test('bash language prepends a node() shim and executes the parsed program with stdin closed', () => {

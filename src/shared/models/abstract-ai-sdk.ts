@@ -33,7 +33,7 @@ import type {
 } from '../types'
 import type { ModelDependencies } from '../types/adapters'
 import { getReasoningControlCapabilities, stripReasoningProviderOptions } from '../utils/reasoning-control'
-import { isExpectedGenerationError } from './error-classification'
+import { isExpectedGenerationError, isNullStreamChunkError } from './error-classification'
 import { ApiError, ChatboxAIAPIError } from './errors'
 import { wrapOpenAICompatibleNonStreamingModel } from './openai-compatible-non-streaming'
 import { stopWhenPersistentToolCallPause } from './persistent-tool-call-pause'
@@ -77,6 +77,25 @@ function isRetryableStatusError(error: unknown): boolean {
     }
   }
   return false
+}
+
+/**
+ * True for chunks that carry real model output. Used to decide whether a late
+ * schema-validation failure (e.g. a gateway's `data: null` frame) can be ignored
+ * because the answer already arrived.
+ */
+function isContentStreamPart<T extends ToolSet>(chunk: TextStreamPart<T>): boolean {
+  switch (chunk.type) {
+    case 'text-delta':
+    case 'reasoning-delta':
+    case 'tool-call':
+    case 'tool-result':
+    case 'file':
+    case 'source':
+      return true
+    default:
+      return false
+  }
 }
 
 class StatusQueue {
@@ -343,6 +362,11 @@ export default abstract class AbstractAISDKModel implements ModelInterface {
 
     const streamIterator = result.fullStream[Symbol.asyncIterator]()
     let nextChunk = streamIterator.next()
+    // A `data: null` frame from a gateway fails the AI SDK chunk schema. Once the model
+    // has produced content, that frame is noise: swallow it and let the stream finish
+    // instead of aborting a complete answer with a user-facing error.
+    let hasEmittedContent = false
+    let swallowedNullChunk = false
 
     while (true) {
       let status = statusQueue.shift()
@@ -374,7 +398,22 @@ export default abstract class AbstractAISDKModel implements ModelInterface {
       const chunk = next.iteration.value
       nextChunk = streamIterator.next()
       if (chunk.type === 'error') {
+        if (hasEmittedContent && isNullStreamChunkError(chunk.error)) {
+          console.debug('[stream] ignoring null chunk validation error after content was received')
+          swallowedNullChunk = true
+          continue
+        }
         this.handleError(chunk.error)
+      }
+
+      if (isContentStreamPart(chunk)) {
+        hasEmittedContent = true
+      }
+
+      if (swallowedNullChunk && chunk.type === 'finish' && chunk.finishReason === 'error') {
+        // The only failure was the ignored null frame, so report a normal completion.
+        yield { ...chunk, finishReason: 'stop' }
+        continue
       }
 
       yield chunk

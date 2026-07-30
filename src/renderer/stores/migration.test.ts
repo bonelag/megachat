@@ -295,10 +295,16 @@ vi.mock('../platform/storages', () => ({
   },
 }))
 
-vi.mock('../../shared/defaults', () => ({
-  settings: vi.fn(() => ({})),
-  SystemProviders: vi.fn(() => []),
-}))
+// Keep the real settings defaults: settingsStore parses them with SettingsSchema at module
+// scope, so an empty stub makes importing anything in that graph throw a ZodError. Only the
+// provider registry is stubbed, since it is irrelevant to storage migration.
+vi.mock('../../shared/defaults', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../shared/defaults')>()
+  return {
+    ...actual,
+    SystemProviders: vi.fn(() => []),
+  }
+})
 
 vi.mock('../lib/utils', () => ({
   getLogger: () => ({

@@ -37,12 +37,14 @@ afterEach(() => {
 
 describe('copy-ripgrep afterPack helper', () => {
   test('selects the target OS and architecture binary', () => {
-    const root = '/project'
+    const root = path.join(path.sep, 'project')
+    const expected = (...segments: string[]) =>
+      path.join(root, 'node_modules', '@vscode', 'ripgrep-universal', 'bin', ...segments)
     expect(copyRipgrep.getRipgrepSourcePath(createContext('darwin', 3, '/tmp/app'), root)).toBe(
-      '/project/node_modules/@vscode/ripgrep-universal/bin/darwin-arm64/rg'
+      expected('darwin-arm64', 'rg')
     )
     expect(copyRipgrep.getRipgrepSourcePath(createContext('win32', 1, '/tmp/app'), root)).toBe(
-      '/project/node_modules/@vscode/ripgrep-universal/bin/win32-x64/rg.exe'
+      expected('win32-x64', 'rg.exe')
     )
   })
 
@@ -61,7 +63,10 @@ describe('copy-ripgrep afterPack helper', () => {
     const target = copyRipgrep.getRipgrepTargetPath(context)
     expect(statSync(target).size).toBe(1024 * 1024)
     expect(readFileSync(target).subarray(0, 4)).toEqual(Buffer.alloc(4, 7))
-    expect(statSync(target).mode & 0o111).not.toBe(0)
+    // Windows has no POSIX execute bits, so mode is always 0 there.
+    if (process.platform !== 'win32') {
+      expect(statSync(target).mode & 0o111).not.toBe(0)
+    }
     expect(readFileSync(path.join(path.dirname(target), 'LICENSE.vscode-ripgrep'), 'utf8')).toBe('MIT')
   })
 })

@@ -26,6 +26,7 @@ vi.mock('../../util', () => ({
 
 import type { Dirent } from 'fs'
 import fs from 'fs'
+import path from 'node:path'
 import { parseSkillFile } from '../parser'
 
 const mockedExistsSync = vi.mocked(fs.existsSync)
@@ -48,6 +49,12 @@ function makeDirent(name: string, isDir: boolean): Dirent {
     path: '/skills',
   } as Dirent
 }
+
+/**
+ * discovery.ts builds child paths with path.join, which uses `\` on win32. Expectations
+ * must go through the same join so they hold on every platform.
+ */
+const joined = (...segments: string[]) => path.join(...segments)
 
 describe('discoverSkills', () => {
   beforeEach(() => {
@@ -77,7 +84,7 @@ describe('discoverSkills', () => {
     const custom = result.find((s) => s.name === 'my-skill')
     expect(custom).toBeDefined()
     expect(custom!.isBuiltin).toBe(false)
-    expect(custom!.path).toBe('/skills/my-skill')
+    expect(custom!.path).toBe(joined('/skills', 'my-skill'))
   })
 
   it('should skip non-directory entries', () => {
@@ -170,7 +177,7 @@ describe('discoverClaudeSkills', () => {
 
     expect(result).toHaveLength(1)
     expect(result[0].name).toBe('my-skill')
-    expect(result[0].path).toBe('/claude/skills/my-skill')
+    expect(result[0].path).toBe(joined('/claude/skills', 'my-skill'))
     expect(result[0].isBuiltin).toBe(false)
     expect(result[0].source).toEqual({ type: 'claude-code', skillPath: '/claude/skills/my-skill' })
   })
@@ -193,7 +200,7 @@ describe('discoverClaudeSkills', () => {
 
     expect(result).toHaveLength(1)
     expect(result[0].name).toBe('linked-skill')
-    expect(mockedStatSync).toHaveBeenCalledWith('/claude/skills/linked-skill')
+    expect(mockedStatSync).toHaveBeenCalledWith(joined('/claude/skills', 'linked-skill'))
   })
 
   it('should deduplicate by realpath (two entries resolving to same path)', () => {

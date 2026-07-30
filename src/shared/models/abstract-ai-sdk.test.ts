@@ -1,5 +1,5 @@
 import type { LanguageModelV3 } from '@ai-sdk/provider'
-import type { Provider } from 'ai'
+import { type Provider, TypeValidationError } from 'ai'
 import type { ModelDependencies } from '../types/adapters'
 import type { SentryScope } from '../utils/sentry_adapter'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -76,6 +76,71 @@ function createModel(): TestModel {
     createDependencies()
   )
 }
+
+describe('AbstractAISDKModel null chunk tolerance', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  async function collect(stream: AsyncGenerator<unknown>): Promise<unknown[]> {
+    const parts: unknown[] = []
+    for await (const part of stream) {
+      parts.push(part)
+    }
+    return parts
+  }
+
+  it('ignores a null chunk validation error once content has streamed', async () => {
+    aiMocks.streamText.mockReturnValue({
+      fullStream: (async function* () {
+        yield { type: 'text-delta', id: 't1', text: 'Hello' }
+        yield {
+          type: 'error',
+          error: new TypeValidationError({ value: null, cause: 'null is not an object' }),
+        }
+        yield { type: 'finish', finishReason: 'error', totalUsage: {} }
+      })(),
+      totalUsage: Promise.resolve({}),
+      finishReason: Promise.resolve('error'),
+    })
+
+    const parts = (await collect(createModel().chatStream([], {}))) as Array<{
+      type: string
+      finishReason?: string
+    }>
+
+    expect(parts.map((p) => p.type)).toEqual(['text-delta', 'finish'])
+    expect(parts[1].finishReason).toBe('stop')
+  })
+
+  it('still surfaces a null chunk error when no content arrived', async () => {
+    aiMocks.streamText.mockReturnValue({
+      fullStream: (async function* () {
+        yield {
+          type: 'error',
+          error: new TypeValidationError({ value: null, cause: 'null is not an object' }),
+        }
+      })(),
+      totalUsage: Promise.resolve({}),
+      finishReason: Promise.resolve('error'),
+    })
+
+    await expect(collect(createModel().chatStream([], {}))).rejects.toThrow(/Type validation failed/)
+  })
+
+  it('still surfaces unrelated stream errors after content', async () => {
+    aiMocks.streamText.mockReturnValue({
+      fullStream: (async function* () {
+        yield { type: 'text-delta', id: 't1', text: 'Hello' }
+        yield { type: 'error', error: new Error('upstream exploded') }
+      })(),
+      totalUsage: Promise.resolve({}),
+      finishReason: Promise.resolve('error'),
+    })
+
+    await expect(collect(createModel().chatStream([], {}))).rejects.toThrow(/upstream exploded/)
+  })
+})
 
 describe('AbstractAISDKModel tool errors', () => {
   beforeEach(() => {

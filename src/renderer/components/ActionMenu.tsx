@@ -171,7 +171,19 @@ const ContextualActionMenu: FC<ActionMenuProps> = ({
                 disabled={item.disabled}
                 className="flex w-full items-center gap-2 rounded-xs border-0 bg-transparent px-2 py-2 text-left disabled:opacity-50"
               >
-                {item.icon && <ScalableIcon icon={item.icon} size={15} />}
+                {item.icon && (
+                  <ScalableIcon
+                    icon={item.icon}
+                    size={15}
+                    style={{
+                      color: theme.variantColorResolver({
+                        color: item.color || 'chatbox-primary',
+                        theme,
+                        variant: 'light',
+                      }).color,
+                    }}
+                  />
+                )}
                 <Text
                   span
                   lineClamp={1}
@@ -228,6 +240,8 @@ const ContextualDoubleCheckMenuItem: FC<{
     : (typeof item.doubleCheck !== 'boolean' && item.doubleCheck.color) || item.color || 'chatbox-primary'
   const icon = showConfirm ? doubleCheckIcon : item.icon
   const text = showConfirm ? doubleCheckText : item.text
+  // 图标跟随文字颜色（tabler 图标默认取 currentColor，而 button 本身没有设置颜色）
+  const resolvedColor = theme.variantColorResolver({ color, theme, variant: 'light' }).color
 
   return (
     <button
@@ -252,14 +266,14 @@ const ContextualDoubleCheckMenuItem: FC<{
         }
       }}
     >
-      {icon && <ScalableIcon icon={icon} size={15} />}
+      {icon && <ScalableIcon icon={icon} size={15} style={{ color: resolvedColor }} />}
       <Text
         span
         lineClamp={1}
         size="sm"
         c={color}
         style={{
-          color: theme.variantColorResolver({ color, theme, variant: 'light' }).color,
+          color: resolvedColor,
         }}
       >
         {text}

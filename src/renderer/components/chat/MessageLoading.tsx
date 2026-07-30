@@ -127,7 +127,8 @@ export function PreparingToolCallStatus(props: {
 
 function formatPreparingProgress(
   progress: Extract<NonNullable<Message['status']>[number], { type: 'preparing_tool_call' }>['progress'],
-  t: ReturnType<typeof useTranslation>['t']
+  // i18next 的 `t` 泛型展开过深会触发 TS2589，这里只需要它的字符串插值能力
+  t: (key: string, options?: Record<string, unknown>) => string
 ): string | null {
   if (!progress) return null
   if (progress.kind === 'lines') {

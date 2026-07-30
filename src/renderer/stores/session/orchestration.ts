@@ -1,4 +1,5 @@
 import { buildContext } from '@shared/context'
+import { isNullStreamChunkError } from '@shared/models/error-classification'
 import type { ModelInterface, ModelStreamPart } from '@shared/models/types'
 import type {
   AppActionApprovalDetails,
@@ -434,6 +435,23 @@ function keepContentPartsThroughToolCall(message: Message, toolCallId: string): 
   return index >= 0 ? message.contentParts.slice(0, index + 1) : message.contentParts
 }
 
+/** Stamp elapsed durations on reasoning and settled tool-call parts before persisting. */
+function finalizePartDurations(contentParts: MessageContentParts): void {
+  for (const part of contentParts) {
+    if (part.type === 'reasoning' && part.startTime && !part.duration) {
+      part.duration = Date.now() - part.startTime
+    }
+    if (
+      part.type === 'tool-call' &&
+      part.startTime &&
+      !part.duration &&
+      (part.state === 'result' || part.state === 'error')
+    ) {
+      part.duration = Date.now() - part.startTime
+    }
+  }
+}
+
 export function shouldPersistStreamingChunk(
   chunkType: ModelStreamPart<ToolSet>['type'],
   elapsedMs: number,
@@ -689,19 +707,7 @@ export async function orchestrateGeneration(
       return
     }
 
-    for (const part of processorState.contentParts) {
-      if (part.type === 'reasoning' && part.startTime && !part.duration) {
-        part.duration = Date.now() - part.startTime
-      }
-      if (
-        part.type === 'tool-call' &&
-        part.startTime &&
-        !part.duration &&
-        (part.state === 'result' || part.state === 'error')
-      ) {
-        part.duration = Date.now() - part.startTime
-      }
-    }
+    finalizePartDurations(processorState.contentParts)
 
     targetMsg = {
       ...targetMsg,
@@ -748,6 +754,35 @@ export async function orchestrateGeneration(
         status: [],
       }
       await persistStreamingMessage(sessionId, targetMsg, { refreshCounting: true })
+      return
+    }
+
+    // Safety net for the `data: null` frame some OpenAI-compatible gateways emit: if the
+    // reply already streamed in, a chunk-schema failure is provider noise, not a failed
+    // generation. Finalize the message normally instead of painting an error over it.
+    const streamedParts = [...infoParts, ...processorState.contentParts]
+    if (
+      isNullStreamChunkError(err) &&
+      getMessageText({ ...targetMsg, contentParts: streamedParts }, true, true).length > 0
+    ) {
+      console.debug('[generation] ignoring null stream chunk error; reply already complete')
+      finalizePartDurations(processorState.contentParts)
+      targetMsg = {
+        ...targetMsg,
+        generating: false,
+        cancel: undefined,
+        contentParts: streamedParts,
+        tokensUsed: targetMsg.tokensUsed ?? estimateTokensFromMessages([...promptMsgs, targetMsg]),
+        status: [],
+        finishReason: processorState.finishReason === 'error' ? 'stop' : processorState.finishReason,
+        usage: processorState.usage,
+        generationDuration: Date.now() - startTime,
+      }
+      await persistStreamingMessage(sessionId, targetMsg, { refreshCounting: true })
+      if (options?.operationType === 'send_message') {
+        markFirstSuccessfulChatCompleted()
+      }
+      appleAppStore.tickAfterMessageGenerated()
       return
     }
 

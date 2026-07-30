@@ -8,8 +8,8 @@ const POWERSHELL_UTF8_PREAMBLE = [
   '[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)',
   '$OutputEncoding = [Console]::OutputEncoding',
 ].join('\n')
-// Kept free of any Electron/Node-runtime imports so they can be unit-tested in isolation.
 
+// Kept free of any Electron/Node-runtime imports so they can be unit-tested in isolation.
 const CODESIGN_NOISE_RE = /ERROR:codesign_util\.cc\(109\).*SecCodeCheckValidity/
 
 const WINDOWS_CD_SHIM = `cd() {
@@ -44,8 +44,23 @@ export function stripCodesignNoise(stderr: string): string {
     .join('\n')
 }
 
+/**
+ * PowerShell decodes stdin with the console's *current* input encoding, which is the OEM
+ * codepage (e.g. 437/936) until the preamble below runs — by then the script text itself
+ * has already been mis-decoded, so any non-ASCII literal in the user program arrives
+ * mangled (`中文` → `Σ╕¡µûç`). Sending the program as base64 keeps the bytes on the wire
+ * pure ASCII and lets PowerShell rebuild the real UTF-8 string in memory.
+ *
+ * `Invoke-Expression` runs the decoded text in the current scope, so variables, streams and
+ * `exit <code>` behave exactly as if the program had been typed inline.
+ */
 export function buildPowerShellStdinScript(code: string): string {
-  return `${POWERSHELL_UTF8_PREAMBLE}\n${code}`
+  const encoded = Buffer.from(code, 'utf8').toString('base64')
+  return [
+    POWERSHELL_UTF8_PREAMBLE,
+    `$__chatboxScript = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encoded}'))`,
+    'Invoke-Expression $__chatboxScript',
+  ].join('\n')
 }
 
 /**
@@ -54,7 +69,8 @@ export function buildPowerShellStdinScript(code: string): string {
  *
  * `node`: the code is the program itself (the runtime reads it from stdin).
  * `powershell`: prepend an ASCII-only UTF-8 setup before the user program so both PowerShell 7
- * and Windows PowerShell decode stdin/stdout consistently.
+ * and Windows PowerShell decode stdin/stdout consistently, and carry the program itself as
+ * base64 so non-ASCII literals survive the console's pre-preamble input codepage.
  * `bash`: parse the complete program as a command group before executing it with stdin redirected
  * from /dev/null. This preserves the old one-shot execution contract: commands such as `cat` and
  * `read` see EOF instead of consuming the remaining script source. On macOS/Linux, prepend a

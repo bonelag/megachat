@@ -170,6 +170,9 @@ async function ensurePreviewServer(): Promise<number> {
     })
   })
 
+  if (port === null) {
+    throw new Error('Failed to start preview server')
+  }
   return port
 }
 

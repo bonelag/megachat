@@ -226,7 +226,8 @@ function Root() {
       const sid = JSON.parse(localStorage.getItem('_currentSessionIdCachedAtom') || '""') as string
       if (sid && startupPage === 'session') {
         router.navigate({
-          to: `/session/${sid}`,
+          to: '/session/$sessionId',
+          params: { sessionId: sid },
           replace: true,
         })
       }
@@ -244,7 +245,8 @@ function Root() {
           const settingsPath = path.substring('/settings'.length)
           navigateToSettings(settingsPath || '/')
         } else {
-          router.navigate({ to: path })
+          // path 来自平台层的深链接，不是字面量路由，需要断言成已知路由类型
+          router.navigate({ to: path as '/' })
         }
       })
     }

@@ -2,7 +2,7 @@
 
 import { MantineProvider } from '@mantine/core'
 import { fireEvent, render, screen } from '@testing-library/react'
-import { describe, expect, test, vi } from 'vitest'
+import { describe, expect, type Mock, test, vi } from 'vitest'
 import { AgentModeRewardQuotaCard } from './AgentModeRewardQuotaCard'
 
 Object.defineProperty(window, 'matchMedia', {
@@ -31,7 +31,7 @@ function renderCard({
   rewardClaimed = false,
   resumeFailed = false,
 }: {
-  onAction?: ReturnType<typeof vi.fn>
+  onAction?: Mock<() => void>
   claimFailed?: boolean
   rewardClaimed?: boolean
   resumeFailed?: boolean

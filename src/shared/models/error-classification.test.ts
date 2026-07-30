@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { isExpectedGenerationError } from './error-classification'
+import { TypeValidationError } from 'ai'
+import { isExpectedGenerationError, isNullStreamChunkError } from './error-classification'
 import {
   AIProviderNoImplementedPaintError,
   ApiError,
@@ -24,3 +25,34 @@ describe('isExpectedGenerationError', () => {
     expect(isExpectedGenerationError('string error')).toBe(false)
   })
 })
+
+describe('isNullStreamChunkError', () => {
+  it('matches a direct TypeValidationError with null value', () => {
+    const err = new TypeValidationError({ value: null, cause: 'null is not valid' })
+    expect(isNullStreamChunkError(err)).toBe(true)
+  })
+
+  it('matches when the error message contains the null validation pattern', () => {
+    const err = new ApiError('Error from Custom OpenAI: AI_TypeValidationError: Type validation failed: Value: null.')
+    expect(isNullStreamChunkError(err)).toBe(true)
+  })
+
+  it('matches via cause chain', () => {
+    const inner = new TypeValidationError({ value: null, cause: 'null is not valid' })
+    const outer = new Error('wrapped')
+    ;(outer as unknown as { cause: unknown }).cause = inner
+    expect(isNullStreamChunkError(outer)).toBe(true)
+  })
+
+  it('does not match a TypeValidationError with a non-null value', () => {
+    const err = new TypeValidationError({ value: { bad: 'field' }, cause: 'schema mismatch' })
+    expect(isNullStreamChunkError(err)).toBe(false)
+  })
+
+  it('does not match an unrelated error', () => {
+    expect(isNullStreamChunkError(new Error('network timeout'))).toBe(false)
+    expect(isNullStreamChunkError(new ApiError('rate limited'))).toBe(false)
+    expect(isNullStreamChunkError(null)).toBe(false)
+  })
+})
+

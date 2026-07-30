@@ -31,7 +31,13 @@ function shouldDropSseDataLine(dataContent: string): boolean {
         return false
     }
     try {
-        return isBillingSummaryPayload(JSON.parse(trimmed))
+        const payload: unknown = JSON.parse(trimmed)
+        // Some gateways emit `data: null` (or a null-valued frame) mid-stream or as a
+        // trailer. Every branch of the AI SDK chunk schema expects an object, so a null
+        // frame fails validation with `Type validation failed: Value: null` even though
+        // the answer streamed fine. It carries no content — drop it.
+        if (payload === null) return true
+        return isBillingSummaryPayload(payload)
     } catch {
         return false
     }

@@ -3,6 +3,11 @@ import { homedir, tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterAll, beforeEach, describe, expect, test, vi } from 'vitest'
 
+// Must match safeRealpathSync() in ./manager: the native variant expands Windows 8.3
+// short names (ADMINI~1 → Administrator), so plain realpathSync would produce paths that
+// never compare equal to the roots the implementation computes.
+const realpathNative = (p: string) => realpathSync.native(p)
+
 // Isolate a fake userData dir so persisted artifacts land somewhere we control & can clean up.
 const { USER_DATA } = vi.hoisted(() => {
   const os = require('node:os') as typeof import('node:os')
@@ -31,7 +36,7 @@ function makeSandboxFile(name: string, content: string): string {
   mkdirSync(TMP_SANDBOX_DIR, { recursive: true })
   const filePath = path.join(TMP_SANDBOX_DIR, name)
   writeFileSync(filePath, content, 'utf-8')
-  return realpathSync(filePath)
+  return realpathNative(filePath)
 }
 
 beforeEach(() => {
@@ -52,7 +57,7 @@ describe('persistSandboxArtifact', () => {
 
     expect(result.success).toBe(true)
     expect(result.artifactPath).toBeTruthy()
-    const artifactsRoot = realpathSync(getSandboxArtifactsRoot())
+    const artifactsRoot = realpathNative(getSandboxArtifactsRoot())
     expect(result.artifactPath?.startsWith(artifactsRoot + path.sep)).toBe(true)
     expect(existsSync(result.artifactPath!)).toBe(true)
     expect(readFileSync(result.artifactPath!, 'utf-8')).toBe('a,b,c\n1,2,3\n')
@@ -80,8 +85,8 @@ describe('persistSandboxArtifact', () => {
     writeFileSync(a, 'CHARTS', 'utf-8')
     writeFileSync(b, 'TABLES', 'utf-8')
 
-    const ra = await persistSandboxArtifact(realpathSync(a), SESSION_ID)
-    const rb = await persistSandboxArtifact(realpathSync(b), SESSION_ID)
+    const ra = await persistSandboxArtifact(realpathNative(a), SESSION_ID)
+    const rb = await persistSandboxArtifact(realpathNative(b), SESSION_ID)
 
     expect(ra.artifactPath).not.toBe(rb.artifactPath)
     // The earlier artifact must not be overwritten by the later same-named one.
@@ -134,9 +139,9 @@ describe('persistSandboxArtifact', () => {
       const tempFile = path.join(tmpdir(), `persist-tmp-${process.pid}.txt`)
       writeFileSync(tempFile, 'from-tmp', 'utf-8')
       try {
-        const result = await persistSandboxArtifact(realpathSync(tempFile), SESSION_ID)
+        const result = await persistSandboxArtifact(realpathNative(tempFile), SESSION_ID)
         expect(result.success).toBe(true)
-        const artifactsRoot = realpathSync(getSandboxArtifactsRoot())
+        const artifactsRoot = realpathNative(getSandboxArtifactsRoot())
         expect(result.artifactPath?.startsWith(artifactsRoot + path.sep)).toBe(true)
         expect(readFileSync(result.artifactPath!, 'utf-8')).toBe('from-tmp')
       } finally {
@@ -152,7 +157,7 @@ describe('persistSandboxArtifact', () => {
     const tempFile = path.join(tmpdir(), `persist-windows-tmp-${process.pid}.txt`)
     writeFileSync(tempFile, 'outside-session', 'utf-8')
     try {
-      const result = await persistSandboxArtifact(realpathSync(tempFile), SESSION_ID)
+      const result = await persistSandboxArtifact(realpathNative(tempFile), SESSION_ID)
       expect(result.success).toBe(false)
       expect(result.error).toMatch(/outside the sandbox/i)
     } finally {
@@ -188,7 +193,7 @@ describe('persistSandboxArtifact', () => {
     const source = path.join(otherSessionDir, 'private.txt')
     writeFileSync(source, 'other session', 'utf8')
 
-    const result = await persistSandboxArtifact(realpathSync(source), SESSION_ID)
+    const result = await persistSandboxArtifact(realpathNative(source), SESSION_ID)
 
     expect(result.success).toBe(false)
     expect(result.error).toMatch(/outside the sandbox/i)
@@ -200,7 +205,7 @@ describe('persistSandboxArtifact', () => {
     mkdirSync(path.dirname(otherSessionArtifact), { recursive: true })
     writeFileSync(otherSessionArtifact, 'other artifact', 'utf8')
 
-    const result = await persistSandboxArtifact(realpathSync(otherSessionArtifact), SESSION_ID)
+    const result = await persistSandboxArtifact(realpathNative(otherSessionArtifact), SESSION_ID)
 
     expect(result.success).toBe(false)
     expect(result.error).toMatch(/outside the sandbox/i)
@@ -210,7 +215,7 @@ describe('persistSandboxArtifact', () => {
     const directory = path.join(getSandboxArtifactsRoot(), SESSION_ID, 'directory')
     mkdirSync(directory, { recursive: true })
 
-    const result = await persistSandboxArtifact(realpathSync(directory), SESSION_ID)
+    const result = await persistSandboxArtifact(realpathNative(directory), SESSION_ID)
 
     expect(result.success).toBe(false)
     expect(result.error).toMatch(/not a file/i)
@@ -232,7 +237,7 @@ describe('persistSandboxArtifact', () => {
 
   test('returns not found for a missing file inside the sandbox root', async () => {
     mkdirSync(TMP_SANDBOX_DIR, { recursive: true })
-    const missing = path.join(realpathSync(TMP_SANDBOX_DIR), 'missing.txt')
+    const missing = path.join(realpathNative(TMP_SANDBOX_DIR), 'missing.txt')
     const result = await persistSandboxArtifact(missing, SESSION_ID)
     expect(result.success).toBe(false)
     expect(result.error).toMatch(/file not found/i)
